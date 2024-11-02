@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Vestaboard Custom Message</title>
+        <link rel="stylesheet" href="/styles/main.css" />
+    </head>
+    <body>
+        <div class="mode-switch">
+            <button onclick="setMode('text')">Text Mode</button>
+            <button onclick="setMode('color')">Color Mode</button>
+        </div>
+
+        <div class="color-picker">
+            <button
+                class="color-btn"
+                style="background: red"
+                data-color="63"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: orange"
+                data-color="64"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: yellow"
+                data-color="65"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: green"
+                data-color="66"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: blue"
+                data-color="67"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: purple"
+                data-color="68"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: white"
+                data-color="69"
+            ></button>
+            <button
+                class="color-btn"
+                style="background: black"
+                data-color="70"
+            ></button>
+        </div>
+
+        <div class="grid" id="vestaboard"></div>
+
+        <button onclick="sendMessage()">Send to Vestaboard</button>
+        <div class="preview" id="preview"></div>
+
+        <script src="/scripts/main.js"></script>
+    </body>
+</html>

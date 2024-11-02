@@ -1,0 +1,48 @@
+.grid {
+    display: grid;
+    grid-template-columns: repeat(22, 30px);
+    gap: 2px;
+    margin: 20px;
+}
+
+.cell {
+    width: 30px;
+    height: 30px;
+    border: 1px solid #ccc;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.mode-switch {
+    margin: 20px;
+}
+
+.color-picker {
+    display: none;
+    margin: 20px;
+}
+
+.color-picker.active {
+    display: block;
+}
+
+.color-btn {
+    width: 30px;
+    height: 30px;
+    margin: 2px;
+    border: none;
+    cursor: pointer;
+}
+
+.text-mode .cell {
+    background: white;
+}
+
+.color-mode .cell {
+    cursor: pointer;
+}
+
+.preview {
+    margin: 20px;
+    font-family: monospace;
+}

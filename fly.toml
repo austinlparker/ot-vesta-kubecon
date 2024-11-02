@@ -1,0 +1,28 @@
+# fly.toml app configuration file generated for ot-vesta-kubecon on 2024-11-02T14:30:33-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'ot-vesta-kubecon'
+primary_region = 'ord'
+
+[build]
+
+[env]
+PORT = '8080'
+
+[processes]
+app = 'run --allow-net --allow-env ./main.ts'
+
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = 'stop'
+auto_start_machines = true
+min_machines_running = 0
+processes = ['app']
+
+[[vm]]
+memory = '256MB'
+cpu_kind = 'shared'
+cpus = 1
