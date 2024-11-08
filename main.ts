@@ -60,18 +60,22 @@ app.use(async (ctx, next) => {
 app.use(async (ctx, next) => {
   if (ctx.request.method === "GET") {
     try {
+      console.log(
+        `Attempting to serve static file: ${ctx.request.url.pathname}`,
+      );
       await ctx.send({
         root: `${Deno.cwd()}/static`,
         index: "index.html",
       });
-    } catch {
+      console.log("Static file served successfully");
+    } catch (err) {
+      console.log(`Static file error: ${err.message}`);
       await next();
     }
   } else {
     await next();
   }
 });
-
 // Routes
 router.get("/hello", async (ctx) => {
   await vc.formatAndSendMessage(VestaboardClient.createTelescope());

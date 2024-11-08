@@ -12,7 +12,7 @@ primary_region = 'ord'
 PORT = '8080'
 
 [processes]
-app = 'run --allow-net --allow-env ./main.ts'
+app = 'run --allow-net --allow-env --allow-read ./main.ts'
 
 [http_service]
 internal_port = 8080
@@ -23,6 +23,6 @@ min_machines_running = 0
 processes = ['app']
 
 [[vm]]
-memory = '256MB'
+memory = '512MB'
 cpu_kind = 'shared'
 cpus = 1

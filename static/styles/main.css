@@ -1,48 +1,188 @@
-.grid {
-    display: grid;
-    grid-template-columns: repeat(22, 30px);
-    gap: 2px;
-    margin: 20px;
+:root {
+    --cell-size: min(30px, calc((100vw - 40px) / 22));
+    --primary-color: #2a6592;
+    --secondary-color: #f0f0f0;
+    --success-color: #4caf50;
+    --error-color: #f44336;
 }
 
-.cell {
-    width: 30px;
-    height: 30px;
-    border: 1px solid #ccc;
-    text-align: center;
-    text-transform: uppercase;
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f5f5f5;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 .mode-switch {
-    margin: 20px;
+    margin: 20px 0;
+    display: flex;
+    gap: 10px;
+}
+
+.mode-switch button,
+button[onclick="sendMessage()"] {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    background-color: var(--primary-color);
+    color: white;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-color 0.2s;
+}
+
+.mode-switch button:hover,
+button[onclick="sendMessage()"]:hover {
+    background-color: #1e4c6e;
+}
+
+.mode-switch button.active {
+    background-color: #1e4c6e;
 }
 
 .color-picker {
     display: none;
-    margin: 20px;
+    margin: 20px 0;
+    padding: 10px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .color-picker.active {
-    display: block;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 5px;
 }
 
 .color-btn {
-    width: 30px;
-    height: 30px;
-    margin: 2px;
-    border: none;
+    width: var(--cell-size);
+    height: var(--cell-size);
+    border: 2px solid transparent;
+    border-radius: 5px;
     cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.color-btn:hover {
+    transform: scale(1.1);
+}
+
+.color-btn.selected {
+    border-color: #333;
+    transform: scale(1.1);
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(22, var(--cell-size));
+    gap: 2px;
+    margin: 20px 0;
+    padding: 10px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.cell {
+    width: var(--cell-size);
+    height: var(--cell-size);
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    text-align: center;
+    text-transform: uppercase;
+    font-size: calc(var(--cell-size) * 0.6);
+    transition: all 0.2s;
 }
 
 .text-mode .cell {
     background: white;
 }
 
+.text-mode .cell:focus {
+    outline: 2px solid var(--primary-color);
+    border-color: var(--primary-color);
+}
+
 .color-mode .cell {
     cursor: pointer;
 }
 
-.preview {
-    margin: 20px;
-    font-family: monospace;
+.color-mode .cell:hover {
+    transform: scale(1.1);
+}
+
+.notification {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 15px 30px;
+    border-radius: 5px;
+    color: white;
+    font-weight: 500;
+    animation: slide-up 0.3s ease-out;
+    z-index: 1000;
+}
+
+.notification.success {
+    background-color: var(--success-color);
+}
+
+.notification.error {
+    background-color: var(--error-color);
+}
+
+.notification.fade-out {
+    animation: fade-out 0.3s ease-out forwards;
+}
+
+@keyframes slide-up {
+    from {
+        transform: translate(-50%, 100%);
+        opacity: 0;
+    }
+    to {
+        transform: translate(-50%, 0);
+        opacity: 1;
+    }
+}
+
+@keyframes fade-out {
+    to {
+        opacity: 0;
+    }
+}
+
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+
+    .mode-switch {
+        flex-direction: column;
+        width: 100%;
+    }
+
+    .mode-switch button {
+        width: 100%;
+    }
+
+    button[onclick="sendMessage()"] {
+        width: 100%;
+        margin-top: 20px;
+    }
+}
+
+/* Disable zoom on mobile when tapping inputs */
+@media (max-width: 768px) {
+    input[type="text"] {
+        font-size: 16px;
+    }
 }
