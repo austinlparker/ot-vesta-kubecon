@@ -1,188 +1,336 @@
-:root {
-    --cell-size: min(30px, calc((100vw - 40px) / 22));
-    --primary-color: #2a6592;
-    --secondary-color: #f0f0f0;
-    --success-color: #4caf50;
-    --error-color: #f44336;
-}
-
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        Helvetica, Arial, sans-serif;
-    margin: 0;
-    padding: 20px;
-    background-color: #f5f5f5;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: #f5f5f5;
+  color: #333;
 }
 
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+h2 {
+  color: #333;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+/* Section styling */
+section {
+  background: white;
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 30px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Mode Switch Controls */
 .mode-switch {
-    margin: 20px 0;
-    display: flex;
-    gap: 10px;
+  text-align: center;
+  margin: 20px 0;
 }
 
-.mode-switch button,
-button[onclick="sendMessage()"] {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 5px;
-    background-color: var(--primary-color);
-    color: white;
-    cursor: pointer;
-    font-size: 16px;
-    transition: background-color 0.2s;
-}
-
-.mode-switch button:hover,
-button[onclick="sendMessage()"]:hover {
-    background-color: #1e4c6e;
+.mode-switch button {
+  padding: 10px 20px;
+  margin: 0 10px;
+  border: none;
+  border-radius: 5px;
+  background: #ddd;
+  cursor: pointer;
+  transition: background-color 0.2s;
 }
 
 .mode-switch button.active {
-    background-color: #1e4c6e;
+  background: #007bff;
+  color: white;
 }
 
+/* Color Picker */
 .color-picker {
-    display: none;
-    margin: 20px 0;
-    padding: 10px;
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: none;
+  justify-content: center;
+  gap: 10px;
+  margin: 20px 0;
 }
 
 .color-picker.active {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 5px;
+  display: flex;
 }
 
 .color-btn {
-    width: var(--cell-size);
-    height: var(--cell-size);
-    border: 2px solid transparent;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: transform 0.2s;
-}
-
-.color-btn:hover {
-    transform: scale(1.1);
+  width: 30px;
+  height: 30px;
+  border: 2px solid #ccc;
+  border-radius: 5px;
+  cursor: pointer;
+  transition:
+    transform 0.2s,
+    border-color 0.2s;
 }
 
 .color-btn.selected {
-    border-color: #333;
-    transform: scale(1.1);
+  border-color: #333;
+  transform: scale(1.1);
 }
 
-.grid {
-    display: grid;
-    grid-template-columns: repeat(22, var(--cell-size));
-    gap: 2px;
-    margin: 20px 0;
-    padding: 10px;
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+/* Common grid styles for both display and input */
+.grid,
+.vestaboard-display {
+  display: grid;
+  grid-template-columns: repeat(22, 1fr);
+  gap: 2px;
+  background: #333;
+  padding: 10px;
+  border-radius: 10px;
+  margin: 20px auto;
+  width: 100%;
+  max-width: 1100px;
+  box-sizing: border-box;
 }
 
+/* Base cell styles (common properties) */
+.display-cell,
 .cell {
-    width: var(--cell-size);
-    height: var(--cell-size);
-    border: 1px solid #ddd;
-    border-radius: 3px;
-    text-align: center;
-    text-transform: uppercase;
-    font-size: calc(var(--cell-size) * 0.6);
-    transition: all 0.2s;
+  aspect-ratio: 1;
+  background: #222;
+  color: white;
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: bold;
+  text-transform: uppercase;
+  border: 1px solid #666;
 }
 
+/* Display cell specific */
+.display-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Input cell specific */
+.cell {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  text-align: center;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.cell:focus {
+  border-color: #007bff;
+  background: #333;
+}
+
+/* Mode-specific styles */
 .text-mode .cell {
-    background: white;
-}
-
-.text-mode .cell:focus {
-    outline: 2px solid var(--primary-color);
-    border-color: var(--primary-color);
+  cursor: text;
 }
 
 .color-mode .cell {
-    cursor: pointer;
+  cursor: pointer;
 }
 
-.color-mode .cell:hover {
-    transform: scale(1.1);
+/* Button styles */
+button {
+  padding: 10px 20px;
+  font-size: 16px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.2s;
 }
 
+.send-button {
+  display: block;
+  margin: 20px auto;
+  background: #28a745;
+  color: white;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+/* Notifications */
 .notification {
-    position: fixed;
-    bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 15px 30px;
-    border-radius: 5px;
-    color: white;
-    font-weight: 500;
-    animation: slide-up 0.3s ease-out;
-    z-index: 1000;
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  padding: 15px 25px;
+  border-radius: 5px;
+  color: white;
+  animation: slide-in 0.3s ease-out;
 }
 
 .notification.success {
-    background-color: var(--success-color);
+  background: #28a745;
 }
 
 .notification.error {
-    background-color: var(--error-color);
+  background: #dc3545;
 }
 
 .notification.fade-out {
-    animation: fade-out 0.3s ease-out forwards;
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
 }
 
-@keyframes slide-up {
-    from {
-        transform: translate(-50%, 100%);
-        opacity: 0;
-    }
-    to {
-        transform: translate(-50%, 0);
-        opacity: 1;
-    }
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
-@keyframes fade-out {
-    to {
-        opacity: 0;
-    }
-}
-
+/* Mobile Responsiveness */
 @media (max-width: 768px) {
-    body {
-        padding: 10px;
-    }
+  .container {
+    padding: 10px;
+  }
 
-    .mode-switch {
-        flex-direction: column;
-        width: 100%;
-    }
+  .grid,
+  .vestaboard-display {
+    gap: 1px;
+    padding: 5px;
+  }
 
-    .mode-switch button {
-        width: 100%;
-    }
+  .display-cell,
+  .cell {
+    font-size: 12px;
+  }
 
-    button[onclick="sendMessage()"] {
-        width: 100%;
-        margin-top: 20px;
-    }
+  .color-btn {
+    width: 25px;
+    height: 25px;
+  }
 }
 
-/* Disable zoom on mobile when tapping inputs */
-@media (max-width: 768px) {
-    input[type="text"] {
-        font-size: 16px;
-    }
+/* For very small screens */
+@media (max-width: 480px) {
+  .display-cell,
+  .cell {
+    font-size: 10px;
+  }
+
+  .mode-switch button {
+    padding: 8px 16px;
+    margin: 0 5px;
+    font-size: 14px;
+  }
+
+  .container {
+    padding: 5px;
+  }
+}
+
+.message-history {
+  margin-top: 30px;
+  padding: 20px;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.message-history h3 {
+  margin-top: 0;
+  color: #333;
+}
+
+#message-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.message-item {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+  gap: 10px;
+}
+
+.message-item .lock-indicator {
+  font-size: 1.2em;
+}
+
+.message-item:last-child {
+  border-bottom: none;
+}
+
+.message-item .timestamp {
+  color: #666;
+  font-size: 0.9em;
+  margin-right: 10px;
+}
+
+.message-item .source {
+  color: #007bff;
+  font-weight: bold;
+  margin-right: 10px;
+}
+
+.message-item button {
+  margin-left: auto;
+  padding: 5px 10px;
+  background: #28a745;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.message-item button:hover {
+  background: #218838;
+}
+
+.send-controls {
+  margin: 20px 0;
+}
+
+.lock-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 5px;
+}
+
+.lock-options input[type="text"] {
+  flex-grow: 1;
+  padding: 5px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+}
+
+.lock-options select {
+  padding: 5px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+}
+
+.lock-options input[type="checkbox"] {
+  margin: 0;
+}
+
+.lock-indicator {
+  margin-left: 10px;
+  color: #666;
 }

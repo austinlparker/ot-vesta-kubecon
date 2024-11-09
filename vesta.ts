@@ -24,22 +24,52 @@ export interface VBMLMessage {
 
 type VestaboardMessage = number[][];
 
-class RateLimiter {
-  private lastRequestTime: number = 0;
-  private readonly minInterval: number = 15000; // 15 seconds in milliseconds
+class AsyncLock {
+  private locked = false;
+  private queue: Promise<void> = Promise.resolve();
 
-  async waitForNextSlot(): Promise<void> {
-    const now = Date.now();
-    const timeToWait = Math.max(
-      0,
-      this.lastRequestTime + this.minInterval - now,
+  async acquire(): Promise<() => void> {
+    const currentQueue = this.queue;
+    let release!: () => void;
+
+    this.queue = this.queue.then(() =>
+      new Promise((resolve) => {
+        release = resolve;
+      })
     );
 
-    if (timeToWait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, timeToWait));
-    }
+    await currentQueue;
+    this.locked = true;
 
-    this.lastRequestTime = Date.now();
+    return () => {
+      this.locked = false;
+      release();
+    };
+  }
+}
+
+class RateLimiter {
+  private lastRequestTime: number = 0;
+  private readonly minInterval: number = 15000; // 15 seconds
+  private readonly lock = new AsyncLock();
+
+  async waitForNextSlot(): Promise<void> {
+    const release = await this.lock.acquire();
+    try {
+      const now = Date.now();
+      const timeToWait = Math.max(
+        0,
+        this.lastRequestTime + this.minInterval - now,
+      );
+
+      if (timeToWait > 0) {
+        await new Promise((resolve) => setTimeout(resolve, timeToWait));
+      }
+
+      this.lastRequestTime = Date.now();
+    } finally {
+      release();
+    }
   }
 }
 
@@ -150,21 +180,42 @@ export class VestaboardClient {
     this.devMode = devMode;
   }
 
-  async formatMessage(message: VBMLMessage): Promise<VestaboardMessage> {
-    console.log(JSON.stringify(message));
-    const response = await fetch("https://vbml.vestaboard.com/compose", {
-      headers: {
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-      body: JSON.stringify(message),
-    });
-
-    if (!response.ok) {
-      throw new Error(`VBML formatting failed: ${response.statusText}`);
+  private async retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    retries = 3,
+  ): Promise<T> {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        return await operation();
+      } catch (error) {
+        if (attempt === retries - 1) throw error;
+        console.warn(`Attempt ${attempt + 1} failed, retrying...`, error);
+      }
     }
+    throw new Error("Should not reach here");
+  }
 
-    return response.json();
+  async formatMessage(message: VBMLMessage): Promise<VestaboardMessage> {
+    return this.retryWithBackoff(async () => {
+      console.log("Formatting message:", JSON.stringify(message));
+      const response = await fetch("https://vbml.vestaboard.com/compose", {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+        body: JSON.stringify(message),
+      });
+
+      if (!response.ok) {
+        throw new Error(`VBML formatting failed: ${response.statusText}`);
+      }
+
+      return response.json();
+    });
   }
 
   async sendMessage(message: VestaboardMessage): Promise<void> {
@@ -174,25 +225,57 @@ export class VestaboardClient {
       return;
     }
 
-    await this.rateLimiter.waitForNextSlot();
+    await this.retryWithBackoff(async () => {
+      await this.rateLimiter.waitForNextSlot();
 
-    const response = await fetch(this.baseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Vestaboard-Read-Write-Key": this.apiKey,
-      },
-      body: JSON.stringify(message),
+      const response = await fetch(this.baseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Vestaboard-Read-Write-Key": this.apiKey,
+        },
+        body: JSON.stringify(message),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to send message: ${response.statusText}`);
+      }
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to send message: ${response.statusText}`);
-    }
   }
 
   async formatAndSendMessage(message: VBMLMessage): Promise<void> {
     const formattedMessage = await this.formatMessage(message);
     await this.sendMessage(formattedMessage);
+  }
+
+  async getCurrentState(): Promise<VestaboardMessage> {
+    if (this.devMode) {
+      // Return a sample state in dev mode
+      return Array(6).fill().map(() => Array(22).fill(0));
+    }
+
+    return this.retryWithBackoff(async () => {
+      await this.rateLimiter.waitForNextSlot();
+
+      const response = await fetch(this.baseUrl, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Vestaboard-Read-Write-Key": this.apiKey,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get current state: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      try {
+        return JSON.parse(data.currentMessage.layout);
+      } catch (error) {
+        throw new Error(`Invalid response format: ${error.message}`);
+      }
+    });
   }
 
   static createCenteredMessage(text: string): VBMLMessage {

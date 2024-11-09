@@ -4,6 +4,7 @@ import { Status } from "jsr:@oak/commons/status";
 import { VestaboardClient } from "./vesta.ts";
 import { handleWebhookEvent } from "./handler.ts";
 import type { WebhookEvent } from "@octokit/webhooks-types";
+import { MessageStore } from "./message_store.ts";
 
 // Configuration
 const isDev = Deno.env.get("DEV_MODE") === "true";
@@ -19,7 +20,8 @@ if (!isDev && !vestaboardApiKey) {
 
 // Initialize clients
 const vc = new VestaboardClient(vestaboardApiKey!, isDev);
-const router = new Router();
+const apiRouter = new Router({ prefix: "/api" });
+const messageStore = new MessageStore();
 const app = new Application();
 
 // Error handling middleware
@@ -33,7 +35,6 @@ app.use(async (ctx, next) => {
         status: err.status,
         message: err.message,
       };
-
       console.error(`HTTP Error: ${err.status} - ${err.message}`);
     } else {
       ctx.response.status = Status.InternalServerError;
@@ -41,7 +42,6 @@ app.use(async (ctx, next) => {
         status: Status.InternalServerError,
         message: "Internal Server Error",
       };
-
       console.error("Unhandled Error:", err);
     }
   }
@@ -56,13 +56,138 @@ app.use(async (ctx, next) => {
   console.log(`${ctx.request.method} ${ctx.request.url} - ${ms}ms`);
 });
 
-// Static file serving
+// API Routes
+apiRouter
+  .get("/hello", async (ctx) => {
+    const message = VestaboardClient.createTelescope();
+    const formatted = await vc.formatMessage(message);
+
+    const record = messageStore.addMessage({
+      grid: formatted,
+      source: "hello",
+    });
+
+    await vc.sendMessage(formatted);
+    ctx.response.body = { message: "🔭", id: record.id };
+  })
+  .get("/board/current", async (ctx) => {
+    const currentState = await vc.getCurrentState();
+    const lastMessage = messageStore.getLatest();
+    const isLocked = messageStore.isLocked();
+
+    ctx.response.body = {
+      grid: currentState || Array(6).fill().map(() => Array(22).fill(0)),
+      lastMessage,
+      isLocked,
+    };
+  })
+  .get("/messages", (ctx) => {
+    const limit = ctx.request.url.searchParams.get("limit");
+    ctx.response.body = messageStore.getMessages(
+      limit ? parseInt(limit) : undefined,
+    );
+  })
+  .get("/messages/:id", (ctx) => {
+    const message = messageStore.getMessage(ctx.params.id);
+    if (!message) {
+      ctx.response.status = Status.NotFound;
+      return;
+    }
+    ctx.response.body = message;
+  })
+  .post("/messages/:id/replay", async (ctx) => {
+    const message = messageStore.getMessage(ctx.params.id);
+    if (!message) {
+      ctx.response.status = Status.NotFound;
+      return;
+    }
+    await vc.sendMessage(message.grid);
+    ctx.response.body = { status: "success", message };
+  })
+  .post("/webhook", async (ctx) => {
+    if (messageStore.isLocked()) {
+      const lock = messageStore.getCurrentLock()!;
+      ctx.response.status = Status.Locked;
+      ctx.response.body = {
+        error: "Board is currently locked",
+        lockedUntil: lock.until,
+        reason: lock.reason,
+      };
+      return;
+    }
+    const body = await ctx.request.body.json();
+    const message = handleWebhookEvent(body as WebhookEvent);
+
+    if (!message) {
+      ctx.response.status = Status.NoContent;
+      console.log("Unhandled webhook event");
+      return;
+    }
+
+    const formatted = await vc.formatMessage(message);
+    const record = messageStore.addMessage({
+      grid: formatted,
+      source: "webhook",
+      metadata: { event: body },
+    });
+
+    await vc.sendMessage(formatted);
+    ctx.response.status = Status.OK;
+    ctx.response.body = { status: "success", id: record.id };
+  })
+  .post("/board/send", async (ctx) => {
+      const { grid, lock } = await ctx.request.body.json();
+
+      // Validate grid structure
+      if (!Array.isArray(grid) ||
+          grid.length !== 6 ||
+          !grid.every(row => Array.isArray(row) &&
+          row.length === 22 &&
+          row.every(cell => Number.isInteger(cell) && cell >= 0 && cell <= 71))) {
+        ctx.response.status = Status.BadRequest;
+        ctx.response.body = { error: "Invalid grid format" };
+        return;
+      }
+
+      // Validate lock if present
+      if (lock) {
+        if (typeof lock.duration !== 'number' ||
+            lock.duration < 1 ||
+            lock.duration > 60 ||
+            (lock.reason && typeof lock.reason !== 'string')) {
+          ctx.response.status = Status.BadRequest;
+          ctx.response.body = { error: "Invalid lock parameters" };
+          return;
+        }
+      }
+
+    const record = messageStore.addMessage({
+      grid,
+      source: "custom",
+      locked: lock
+        ? {
+          until: new Date(Date.now() + lock.duration * 60000),
+          reason: lock.reason,
+        }
+        : undefined,
+    });
+
+    await vc.sendMessage(grid);
+    ctx.response.status = Status.OK;
+    ctx.response.body = { status: "success", id: record.id };
+  });
+
+// Mount API routes
+app.use(apiRouter.routes());
+app.use(apiRouter.allowedMethods());
+
+// Static file serving (after API routes)
 app.use(async (ctx, next) => {
-  if (ctx.request.method === "GET") {
+  if (
+    ctx.request.method === "GET" && !ctx.request.url.pathname.startsWith("/api")
+  ) {
     try {
-      console.log(
-        `Attempting to serve static file: ${ctx.request.url.pathname}`,
-      );
+      console.log(`Serving static file: ${ctx.request.url.pathname}`);
       await ctx.send({
         root: `${Deno.cwd()}/static`,
         index: "index.html",
@@ -76,31 +201,6 @@ app.use(async (ctx, next) => {
     await next();
   }
 });
-// Routes
-router.get("/hello", async (ctx) => {
-  await vc.formatAndSendMessage(VestaboardClient.createTelescope());
-  ctx.response.body = "🔭";
-});
-
-router.post("/webhook", async (ctx) => {
-  const body = await ctx.request.body.json();
-  const message = handleWebhookEvent(body as WebhookEvent);
-
-  if (!message) {
-    ctx.response.status = Status.NoContent;
-    console.log("Unhandled webhook event");
-    return;
-  }
-
-  await vc.formatAndSendMessage(message);
-  ctx.response.status = Status.OK;
-});
-
-router.post("/custom/send", async (ctx) => {
-  const { grid } = await ctx.request.body.json();
-  await vc.sendMessage(grid);
-  ctx.response.status = Status.OK;
-});
 
 // Error event handling
 app.addEventListener("error", (evt) => {
@@ -108,9 +208,6 @@ app.addEventListener("error", (evt) => {
 });
 
 // Start server
-app.use(router.routes());
-app.use(router.allowedMethods());
-
 console.log(
   `Starting server on port ${port} ${isDev ? "(development mode)" : ""}`,
 );
