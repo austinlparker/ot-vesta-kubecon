@@ -1,3 +1,5 @@
+import { vestaboardApiErrors } from "./main.ts";
+
 interface Position {
   x: number;
   y: number;
@@ -200,22 +202,74 @@ export class VestaboardClient {
   }
 
   async formatMessage(message: VBMLMessage): Promise<VestaboardMessage> {
-    return this.retryWithBackoff(async () => {
-      console.log("Formatting message:", JSON.stringify(message));
-      const response = await fetch("https://vbml.vestaboard.com/compose", {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        method: "POST",
-        body: JSON.stringify(message),
+    try {
+      return this.retryWithBackoff(async () => {
+        const response = await fetch("https://vbml.vestaboard.com/compose", {
+          headers: {
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+          body: JSON.stringify(message),
+        });
+
+        if (!response.ok) {
+          throw new Error(`VBML formatting failed: ${response.statusText}`);
+        }
+
+        return response.json();
       });
+    } catch (error) {
+      vestaboardApiErrors.labels({ operation: "format" }).inc();
+      throw error;
+    }
+  }
 
-      if (!response.ok) {
-        throw new Error(`VBML formatting failed: ${response.statusText}`);
-      }
+  async formatBlueskyPost(
+    hydratedPost: { displayName: string; handle: string; postText: string },
+  ): Promise<VestaboardMessage> {
+    const maxLength = 22;
+    // Truncate texts, leaving room for the blue square in username line
+    const displayName = hydratedPost.displayName.slice(0, maxLength - 1); // -1 for square only
+    const handle = hydratedPost.handle.slice(0, maxLength - 1); // -1 for @ symbol
+    const truncatedText = hydratedPost.postText.slice(0, maxLength * 3); // Allow for 3 lines of text
 
-      return response.json();
-    });
+    const message: VBMLMessage = {
+      components: [
+        // Header: Blue square + username (no extra space)
+        {
+          template: `{67}${displayName}`, // Removed the space after the square
+          style: {
+            height: 1,
+            width: maxLength,
+            justify: "left",
+            absolutePosition: { x: 0, y: 0 },
+          },
+        },
+        // Handle with @ prefix
+        {
+          template: `@${handle}`,
+          style: {
+            height: 1,
+            width: maxLength,
+            justify: "left",
+            absolutePosition: { x: 0, y: 1 },
+          },
+        },
+        // Empty line is handled by positioning
+        // Post text
+        {
+          template: truncatedText,
+          style: {
+            height: 3, // Allow up to 3 lines for the post text
+            width: maxLength,
+            justify: "left",
+            absolutePosition: { x: 0, y: 3 },
+          },
+        },
+      ],
+    };
+
+    return this.formatMessage(message);
   }
 
   async sendMessage(message: VestaboardMessage): Promise<void> {
@@ -249,33 +303,39 @@ export class VestaboardClient {
   }
 
   async getCurrentState(): Promise<VestaboardMessage> {
-    if (this.devMode) {
-      // Return a sample state in dev mode
-      return Array(6).fill().map(() => Array(22).fill(0));
-    }
+    try {
+      if (this.devMode) {
+        return Array(6).fill(undefined).map(() => Array(22).fill(0));
+      }
 
-    return this.retryWithBackoff(async () => {
-      await this.rateLimiter.waitForNextSlot();
+      return this.retryWithBackoff(async () => {
+        await this.rateLimiter.waitForNextSlot();
 
-      const response = await fetch(this.baseUrl, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Vestaboard-Read-Write-Key": this.apiKey,
-        },
+        const response = await fetch(this.baseUrl, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Vestaboard-Read-Write-Key": this.apiKey,
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to get current state: ${response.statusText}`,
+          );
+        }
+
+        const data = await response.json();
+        try {
+          return JSON.parse(data.currentMessage.layout);
+        } catch (error) {
+          throw new Error(`Invalid response format: ${error.message}`);
+        }
       });
-
-      if (!response.ok) {
-        throw new Error(`Failed to get current state: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      try {
-        return JSON.parse(data.currentMessage.layout);
-      } catch (error) {
-        throw new Error(`Invalid response format: ${error.message}`);
-      }
-    });
+    } catch (error) {
+      vestaboardApiErrors.labels({ operation: "getCurrentState" }).inc();
+      throw error;
+    }
   }
 
   static createCenteredMessage(text: string): VBMLMessage {
