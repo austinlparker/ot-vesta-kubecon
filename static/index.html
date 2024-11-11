@@ -6,85 +6,99 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
-    <title>Vestaboard Custom Message</title>
+    <title>Vestaboard Control</title>
     <link rel="stylesheet" href="/styles/main.css" />
   </head>
   <body>
     <div class="container">
-      <!-- Current State Display -->
-      <section class="current-state">
-        <h2>Current Vestaboard Display</h2>
-        <div class="vestaboard-display" id="current-display">
-          <!-- Will be populated by JavaScript -->
+      <!-- Live Display Section -->
+      <section class="live-display">
+        <h2>Live Board</h2>
+        <div class="vestaboard-display" id="live-display"></div>
+        <div class="status-info">
+          <span id="board-status">Last updated: Never</span>
+          <button onclick="refreshCurrentState()">Refresh</button>
         </div>
-        <button onclick="refreshCurrentState()">Refresh Display</button>
       </section>
 
-      <!-- Message Creator -->
-      <section class="message-creator">
-        <h2>Create New Message</h2>
-        <div class="mode-switch">
-          <button onclick="setMode('text')">Text Mode</button>
-          <button onclick="setMode('color')">Color Mode</button>
+      <!-- Queue Display Section -->
+      <section class="queue-display">
+        <h2>Message Queue</h2>
+        <div class="queue-list" id="queue-display"></div>
+      </section>
+
+      <!-- Message Editor Section -->
+      <section class="message-editor">
+        <h2>Create Message</h2>
+
+        <div class="editor-controls">
+          <div class="mode-switch">
+            <button onclick="setMode('text')">Text Mode</button>
+            <button onclick="setMode('color')">Color Mode</button>
+          </div>
+
+          <div class="color-picker">
+            <button
+              class="color-btn"
+              style="background: red"
+              data-color="63"
+              title="Red"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: orange"
+              data-color="64"
+              title="Orange"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: yellow"
+              data-color="65"
+              title="Yellow"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: green"
+              data-color="66"
+              title="Green"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: blue"
+              data-color="67"
+              title="Blue"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: purple"
+              data-color="68"
+              title="Purple"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: white"
+              data-color="69"
+              title="White"
+            ></button>
+            <button
+              class="color-btn"
+              style="background: black"
+              data-color="70"
+              title="Black"
+            ></button>
+          </div>
         </div>
 
-        <div class="color-picker">
-          <button
-            class="color-btn"
-            style="background: red"
-            data-color="63"
-            title="Red"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: orange"
-            data-color="64"
-            title="Orange"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: yellow"
-            data-color="65"
-            title="Yellow"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: green"
-            data-color="66"
-            title="Green"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: blue"
-            data-color="67"
-            title="Blue"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: purple"
-            data-color="68"
-            title="Purple"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: white"
-            data-color="69"
-            title="White"
-          ></button>
-          <button
-            class="color-btn"
-            style="background: black"
-            data-color="70"
-            title="Black"
-          ></button>
+        <div class="input-area">
+          <div class="grid" id="vestaboard"></div>
         </div>
-
-        <div class="grid" id="vestaboard"></div>
 
         <div class="send-controls">
           <div class="lock-options">
-            <input type="checkbox" id="lockMessage" />
-            <label for="lockMessage">Lock this message</label>
+            <label>
+              <input type="checkbox" id="lockMessage" />
+              Lock Message
+            </label>
             <select id="lockDuration" disabled>
               <option value="5">5 minutes</option>
               <option value="15">15 minutes</option>
@@ -98,8 +112,8 @@
               disabled
             />
           </div>
-          <button class="send-button" onclick="sendMessage()">
-            Send to Vestaboard
+          <button class="send-button" onclick="queueMessage()">
+            Add to Queue
           </button>
         </div>
       </section>

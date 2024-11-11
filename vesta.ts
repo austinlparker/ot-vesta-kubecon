@@ -1,4 +1,6 @@
-import { vestaboardApiErrors } from "./main.ts";
+import { messagesSentTotal, vestaboardApiErrors } from "./metrics.ts";
+import { MessageStore } from "./message_store.ts";
+import { CHARACTER_MAP } from "./util.ts";
 
 interface Position {
   x: number;
@@ -24,7 +26,16 @@ export interface VBMLMessage {
   components: VBMLComponent[];
 }
 
-type VestaboardMessage = number[][];
+export type VestaboardMessage = number[][];
+
+interface VestaboardConfig {
+  apiKey: string;
+  devMode?: boolean;
+  baseUrl?: string;
+  queueInterval?: number;
+  retryAttempts?: number;
+  rateLimitMs?: number;
+}
 
 class AsyncLock {
   private locked = false;
@@ -52,8 +63,12 @@ class AsyncLock {
 
 class RateLimiter {
   private lastRequestTime: number = 0;
-  private readonly minInterval: number = 15000; // 15 seconds
+  private readonly minInterval: number;
   private readonly lock = new AsyncLock();
+
+  constructor(minInterval: number) {
+    this.minInterval = minInterval;
+  }
 
   async waitForNextSlot(): Promise<void> {
     const release = await this.lock.acquire();
@@ -76,93 +91,46 @@ class RateLimiter {
 }
 
 export class VestaboardClient {
-  private readonly apiKey: string;
-  private readonly baseUrl: string;
+  private readonly config: Required<VestaboardConfig>;
   private readonly rateLimiter: RateLimiter;
-  private readonly devMode: boolean;
+  private readonly messageStore: MessageStore;
+  private processingInterval: number | undefined;
 
-  private static readonly CHARACTER_MAP: Record<number, string> = {
-    0: " ", // Blank
-    1: "A",
-    2: "B",
-    3: "C",
-    4: "D",
-    5: "E",
-    6: "F",
-    7: "G",
-    8: "H",
-    9: "I",
-    10: "J",
-    11: "K",
-    12: "L",
-    13: "M",
-    14: "N",
-    15: "O",
-    16: "P",
-    17: "Q",
-    18: "R",
-    19: "S",
-    20: "T",
-    21: "U",
-    22: "V",
-    23: "W",
-    24: "X",
-    25: "Y",
-    26: "Z",
-    27: "1",
-    28: "2",
-    29: "3",
-    30: "4",
-    31: "5",
-    32: "6",
-    33: "7",
-    34: "8",
-    35: "9",
-    36: "0",
-    37: "!",
-    38: "@",
-    39: "#",
-    40: "$",
-    41: "(",
-    42: ")",
-    44: "-",
-    46: "+",
-    47: "&",
-    48: "=",
-    49: ";",
-    50: ":",
-    52: "'",
-    53: '"',
-    54: "%",
-    55: ",",
-    56: ".",
-    59: "/",
-    60: "?",
-    62: "°",
-    63: "🟥",
-    64: "🟧",
-    65: "🟨",
-    66: "🟩",
-    67: "🟦",
-    68: "🟪",
-    69: "⬜",
-    70: "⬛",
-    71: "█",
+  private static readonly DEFAULT_CONFIG: Omit<
+    Required<VestaboardConfig>,
+    "apiKey"
+  > = {
+    devMode: false,
+    baseUrl: "https://rw.vestaboard.com",
+    queueInterval: 30000, // 30 seconds
+    retryAttempts: 3,
+    rateLimitMs: 15000, // 15 seconds
   };
+  private static readonly VBML_URL = "https://vbml.vestaboard.com/compose";
+  constructor(
+    config: VestaboardConfig,
+    messageStore: MessageStore,
+  ) {
+    this.config = {
+      ...VestaboardClient.DEFAULT_CONFIG,
+      ...config,
+    };
+    this.config.baseUrl = this.config.baseUrl.replace(/\/+$/, "");
+    this.messageStore = messageStore;
+    this.rateLimiter = new RateLimiter(this.config.rateLimitMs);
+  }
 
   private prettyPrintVestaboard(message: VestaboardMessage): void {
     const TOP_BORDER = "┌─────────────────────────────────────────────┐";
     const BOTTOM_BORDER = "└─────────────────────────────────────────────┘";
     const SIDE_BORDER = "│";
-    const SPACE_CHAR = "▢"; // or '·' if you prefer
+    const SPACE_CHAR = "▢";
 
     console.log("\n" + TOP_BORDER);
 
     message.forEach((row) => {
       const chars = row.map((code) =>
-        code === 0
-          ? SPACE_CHAR
-          : VestaboardClient.CHARACTER_MAP[code] || SPACE_CHAR
+        code === 0 ? SPACE_CHAR : CHARACTER_MAP[code] || SPACE_CHAR
       );
       const displayText = chars.join(" ").padEnd(43, " ");
       console.log(`${SIDE_BORDER} ${displayText} ${SIDE_BORDER}`);
@@ -171,22 +139,44 @@ export class VestaboardClient {
     console.log(BOTTOM_BORDER + "\n");
   }
 
-  constructor(
-    apiKey: string,
-    devMode = false,
-    baseUrl: string = "https://rw.vestaboard.com/",
-  ) {
-    this.apiKey = apiKey;
-    this.baseUrl = baseUrl;
-    this.rateLimiter = new RateLimiter();
-    this.devMode = devMode;
+  startProcessingQueue(): void {
+    if (this.processingInterval) return;
+
+    console.log(
+      `Starting message queue processor (interval: ${this.config.queueInterval}ms)`,
+    );
+
+    this.processingInterval = setInterval(() => {
+      this.processNextMessage().catch((error) => {
+        console.error("Error processing message queue:", error);
+      });
+    }, this.config.queueInterval);
   }
 
-  private async retryWithBackoff<T>(
-    operation: () => Promise<T>,
-    retries = 3,
-  ): Promise<T> {
-    for (let attempt = 0; attempt < retries; attempt++) {
+  stopProcessingQueue(): void {
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval);
+      this.processingInterval = undefined;
+    }
+  }
+
+  private async processNextMessage(): Promise<void> {
+    const message = this.messageStore.getNextUnsent();
+    if (!message) return;
+
+    try {
+      await this.sendMessage(message.grid);
+      this.messageStore.markAsSent(message.id);
+      messagesSentTotal.labels({ source: message.source }).inc();
+    } catch (error) {
+      this.messageStore.markSendAttempt(message.id);
+      vestaboardApiErrors.labels({ operation: "send" }).inc();
+      throw error;
+    }
+  }
+
+  private async retryWithBackoff<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < this.config.retryAttempts; attempt++) {
       try {
         if (attempt > 0) {
           const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
@@ -194,7 +184,7 @@ export class VestaboardClient {
         }
         return await operation();
       } catch (error) {
-        if (attempt === retries - 1) throw error;
+        if (attempt === this.config.retryAttempts - 1) throw error;
         console.warn(`Attempt ${attempt + 1} failed, retrying...`, error);
       }
     }
@@ -204,7 +194,7 @@ export class VestaboardClient {
   async formatMessage(message: VBMLMessage): Promise<VestaboardMessage> {
     try {
       return this.retryWithBackoff(async () => {
-        const response = await fetch("https://vbml.vestaboard.com/compose", {
+        const response = await fetch(VestaboardClient.VBML_URL, {
           headers: {
             "Content-Type": "application/json",
           },
@@ -272,8 +262,8 @@ export class VestaboardClient {
     return this.formatMessage(message);
   }
 
-  async sendMessage(message: VestaboardMessage): Promise<void> {
-    if (this.devMode) {
+  private async sendMessage(message: VestaboardMessage): Promise<void> {
+    if (this.config.devMode) {
       console.log("DEV MODE: Would send message to Vestaboard:");
       this.prettyPrintVestaboard(message);
       return;
@@ -282,11 +272,11 @@ export class VestaboardClient {
     await this.retryWithBackoff(async () => {
       await this.rateLimiter.waitForNextSlot();
 
-      const response = await fetch(this.baseUrl, {
+      const response = await fetch(`${this.config.baseUrl}/`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Vestaboard-Read-Write-Key": this.apiKey,
+          "X-Vestaboard-Read-Write-Key": this.config.apiKey,
         },
         body: JSON.stringify(message),
       });
@@ -302,20 +292,32 @@ export class VestaboardClient {
     await this.sendMessage(formattedMessage);
   }
 
+  async queueMessage(
+    message: VestaboardMessage,
+    source: MessageRecord["source"],
+    metadata?: Record<string, unknown>,
+  ): Promise<MessageRecord> {
+    return this.messageStore.addMessage({
+      grid: message,
+      source,
+      metadata,
+    });
+  }
+
   async getCurrentState(): Promise<VestaboardMessage> {
     try {
-      if (this.devMode) {
+      if (this.config.devMode) {
         return Array(6).fill(undefined).map(() => Array(22).fill(0));
       }
 
       return this.retryWithBackoff(async () => {
         await this.rateLimiter.waitForNextSlot();
 
-        const response = await fetch(this.baseUrl, {
+        const response = await fetch(`${this.config.baseUrl}/`, {
           method: "GET",
           headers: {
             "Content-Type": "application/json",
-            "X-Vestaboard-Read-Write-Key": this.apiKey,
+            "X-Vestaboard-Read-Write-Key": this.config.apiKey,
           },
         });
 

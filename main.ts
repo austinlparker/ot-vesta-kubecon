@@ -5,7 +5,12 @@ import { VestaboardClient } from "./vesta.ts";
 import { handleWebhookEvent } from "./handler.ts";
 import type { WebhookEvent } from "@octokit/webhooks-types";
 import { Registry } from "https://deno.land/x/ts_prometheus/mod.ts";
-import { Counter, Histogram } from "https://deno.land/x/ts_prometheus/mod.ts";
+import {
+  httpRequestDuration,
+  httpRequestsTotal,
+  messageStoreLockouts,
+  vestaboardApiErrors,
+} from "./metrics.ts";
 import { MessageStore } from "./message_store.ts";
 import { initializeJetstream } from "./bsky.ts";
 import { ContentFilter } from "./mod.ts";
@@ -27,52 +32,26 @@ if (!openAiKey) {
   Deno.exit(1);
 }
 
-// HTTP metrics
-export const httpRequestsTotal = Counter.with({
-  name: "http_requests_total",
-  help: "Total number of HTTP requests",
-  labels: ["method", "path", "status"],
-});
-
-export const httpRequestDuration = Histogram.with({
-  name: "http_request_duration_seconds",
-  help: "HTTP request duration in seconds",
-  labels: ["method", "path"],
-  buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5, 7, 10], // in seconds
-});
-
-// API-specific metrics
-export const messagesSentTotal = Counter.with({
-  name: "messages_sent_total",
-  help: "Total number of messages sent to Vestaboard",
-  labels: ["source"], // source can be 'hello', 'webhook', 'custom', 'bluesky'
-});
-
-export const messageStoreLockouts = Counter.with({
-  name: "message_store_lockouts_total",
-  help: "Number of times messages were blocked due to store being locked",
-});
-
-export const messageStoreSize = Counter.with({
-  name: "message_store_messages_total",
-  help: "Total number of messages in the store",
-});
-
-export const vestaboardApiErrors = Counter.with({
-  name: "vestaboard_api_errors_total",
-  help: "Number of Vestaboard API errors",
-  labels: ["operation"], // operation can be 'send', 'format', 'getCurrentState'
-});
-
 // Initialize clients
-const vc = new VestaboardClient(vestaboardApiKey!, isDev);
+const messageStore = new MessageStore();
+const vc = new VestaboardClient({
+  apiKey: vestaboardApiKey!,
+  devMode: isDev,
+  baseUrl: "https://rw.vestaboard.com",
+  queueInterval: parseInt(Deno.env.get("QUEUE_INTERVAL_MS") || "30000"),
+  rateLimitMs: parseInt(Deno.env.get("RATE_LIMIT_MS") || "15000"),
+  retryAttempts: parseInt(Deno.env.get("RETRY_ATTEMPTS") || "3"),
+}, messageStore);
 const apiRouter = new Router({ prefix: "/api" });
 const metricsRouter = new Router();
+
 const contentFilter = new ContentFilter(openAiKey);
-const messageStore = new MessageStore();
 const _jetstream = initializeJetstream(messageStore, vc, contentFilter);
+
 const app = new Application();
 const metricsApp = new Application();
+
+vc.startProcessingQueue();
 
 app.use(async (ctx, next) => {
   const start = Date.now();
@@ -84,7 +63,6 @@ app.use(async (ctx, next) => {
     const method = ctx.request.method;
     const status = ctx.response.status;
 
-    // Record metrics
     httpRequestsTotal.labels({ method, path, status: String(status) }).inc();
     httpRequestDuration.labels({ method, path })
       .observe(ms / 1000); // Convert to seconds
@@ -134,16 +112,10 @@ apiRouter
     try {
       const message = VestaboardClient.createTelescope();
       const formatted = await vc.formatMessage(message);
-      const record = messageStore.addMessage({
-        grid: formatted,
-        source: "hello",
-      });
-      await vc.sendMessage(formatted);
-      messagesSentTotal.labels({ source: "hello" }).inc();
-      messageStoreSize.inc();
+      const record = await vc.queueMessage(formatted, "hello");
       ctx.response.body = { message: "🔭", id: record.id };
     } catch (error) {
-      vestaboardApiErrors.labels({ operation: "send" }).inc();
+      vestaboardApiErrors.labels({ operation: "format" }).inc();
       throw error;
     }
   })
@@ -153,7 +125,8 @@ apiRouter
     const isLocked = messageStore.isLocked();
 
     ctx.response.body = {
-      grid: currentState || Array(6).fill().map(() => Array(22).fill(0)),
+      grid: currentState ||
+        Array(6).fill(undefined).map(() => Array(22).fill(0)),
       lastMessage,
       isLocked,
     };
@@ -178,8 +151,13 @@ apiRouter
       ctx.response.status = Status.NotFound;
       return;
     }
-    await vc.sendMessage(message.grid);
-    ctx.response.body = { status: "success", message };
+    try {
+      const record = await vc.queueMessage(message.grid, message.source);
+      ctx.response.body = { status: "success", message, queuedId: record.id };
+    } catch (error) {
+      vestaboardApiErrors.labels({ operation: "queue" }).inc();
+      throw error;
+    }
   })
   .post("/webhook", async (ctx) => {
     if (messageStore.isLocked()) {
@@ -204,20 +182,14 @@ apiRouter
       }
 
       const formatted = await vc.formatMessage(message);
-      const record = messageStore.addMessage({
-        grid: formatted,
-        source: "webhook",
-        metadata: { event: body },
+      const record = await vc.queueMessage(formatted, "webhook", {
+        event: body,
       });
-
-      await vc.sendMessage(formatted);
-      messagesSentTotal.labels({ source: "webhook" }).inc();
-      messageStoreSize.inc();
 
       ctx.response.status = Status.OK;
       ctx.response.body = { status: "success", id: record.id };
     } catch (error) {
-      vestaboardApiErrors.labels({ operation: "send" }).inc();
+      vestaboardApiErrors.labels({ operation: "format" }).inc();
       throw error;
     }
   })
@@ -253,20 +225,22 @@ apiRouter
       }
     }
 
-    const record = messageStore.addMessage({
-      grid,
-      source: "custom",
-      locked: lock
-        ? {
-          until: new Date(Date.now() + lock.duration * 60000),
-          reason: lock.reason,
-        }
-        : undefined,
-    });
+    try {
+      const record = await vc.queueMessage(grid, "custom", {
+        locked: lock
+          ? {
+            until: new Date(Date.now() + lock.duration * 60000),
+            reason: lock.reason,
+          }
+          : undefined,
+      });
 
-    await vc.sendMessage(grid);
-    ctx.response.status = Status.OK;
-    ctx.response.body = { status: "success", id: record.id };
+      ctx.response.status = Status.OK;
+      ctx.response.body = { status: "success", id: record.id };
+    } catch (error) {
+      vestaboardApiErrors.labels({ operation: "queue" }).inc();
+      throw error;
+    }
   });
 
 // Mount API routes
@@ -283,12 +257,10 @@ app.use(async (ctx, next) => {
     ctx.request.url.pathname !== "/metrics"
   ) {
     try {
-      console.log(`Serving static file: ${ctx.request.url.pathname}`);
       await ctx.send({
         root: `${Deno.cwd()}/static`,
         index: "index.html",
       });
-      console.log("Static file served successfully");
     } catch (err) {
       console.log(`Static file error: ${err.message}`);
       await next();
@@ -314,7 +286,8 @@ metricsApp.addEventListener("listen", ({ hostname, port }) => {
 
 app.addEventListener("listen", ({ hostname, port, secure }) => {
   console.log(
-    `🚀 Server listening on: ${secure ? "https://" : "http://"}${hostname ?? "localhost"
+    `🚀 Server listening on: ${secure ? "https://" : "http://"}${
+      hostname ?? "localhost"
     }:${port}`,
   );
 });

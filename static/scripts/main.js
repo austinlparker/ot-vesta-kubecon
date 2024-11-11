@@ -125,23 +125,29 @@ const REVERSE_CHARACTER_MAP = {
   70: "⬛",
 };
 
+// State Management
 let currentMode = "text";
 let selectedColor = null;
-let lastMessageId = null;
 let refreshInterval;
 
+// Initialize
 document.addEventListener("DOMContentLoaded", () => {
-  createDisplayGrid();
+  createDisplayGrid("live-display");
+  createDisplayGrid("queue-display");
   createInputGrid();
-  createMessageHistory();
-  updateMessageHistory();
   setupEventListeners();
   setMode("text");
+
+  // Start refresh cycles
   refreshCurrentState();
-  startAutoRefresh();
-  setInterval(updateMessageHistory, 30000);
-  const lockCheckbox = document.getElementById("lockMessage");
-  lockCheckbox.addEventListener("change", (e) => {
+  refreshQueueState();
+
+  // Set up auto-refresh
+  setInterval(refreshCurrentState, 15000); // Every 15 seconds
+  setInterval(refreshQueueState, 5000); // Every 5 seconds
+
+  // Lock checkbox handler
+  document.getElementById("lockMessage").addEventListener("change", (e) => {
     const duration = document.getElementById("lockDuration");
     const reason = document.getElementById("lockReason");
     duration.disabled = !e.target.checked;
@@ -149,99 +155,15 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-async function refreshCurrentState() {
-  try {
-    const response = await fetch("/api/board/current");
-    if (!response.ok) throw new Error("Failed to fetch current state");
-
-    const data = await response.json();
-
-    // Check if we have a valid grid
-    if (!data.grid || !Array.isArray(data.grid)) {
-      throw new Error("Invalid grid data received");
-    }
-
-    updateDisplayGrid(data.grid);
-
-    // Update last known message ID if available
-    if (data.lastMessage?.id) {
-      lastMessageId = data.lastMessage.id;
-    }
-  } catch (error) {
-    console.error("Refresh error:", error);
-    showNotification("Failed to refresh display: " + error.message, "error");
+function createDisplayGrid(elementId) {
+  const display = document.getElementById(elementId);
+  if (!display) {
+    console.error(`Element with id "${elementId}" not found`);
+    return;
   }
-}
 
-// Add message history display
-function createMessageHistory() {
-  const historyContainer = document.createElement("div");
-  historyContainer.className = "message-history";
+  display.innerHTML = ""; // Clear any existing content
 
-  const heading = document.createElement("h3");
-  heading.textContent = "Recent Messages";
-  historyContainer.appendChild(heading);
-
-  const list = document.createElement("ul");
-  list.id = "message-list";
-  historyContainer.appendChild(list);
-
-  document.querySelector(".container").appendChild(historyContainer);
-}
-
-function updateMessageHistory() {
-  const list = document.getElementById("message-list");
-  if (!list) return;
-
-  fetch("/api/messages?limit=5")
-    .then((response) => response.json())
-    .then((messages) => {
-      list.innerHTML = messages
-        .map(
-          (msg) => `
-                <li class="message-item">
-                    <span class="timestamp">
-                        ${new Date(msg.timestamp).toLocaleString()}
-                    </span>
-                    <span class="source">${msg.source}</span>
-                    ${
-                      msg.locked
-                        ? `
-                        <span class="lock-indicator" title="Locked until ${new Date(
-                          msg.locked.until,
-                        ).toLocaleString()}">🔒</span>
-                    `
-                        : ""
-                    }
-                    <button onclick="replayMessage('${msg.id}')">Replay</button>
-                </li>
-            `,
-        )
-        .join("");
-    })
-    .catch((error) => console.error("Failed to fetch message history:", error));
-}
-
-async function replayMessage(id) {
-  try {
-    const response = await fetch(`/api/messages/${id}/replay`, {
-      method: "POST",
-    });
-
-    if (response.ok) {
-      showNotification("Message replayed successfully", "success");
-      const data = await response.json();
-      updateDisplayGrid(data.message.grid);
-    } else {
-      throw new Error("Failed to replay message");
-    }
-  } catch (error) {
-    showNotification(error.message, "error");
-  }
-}
-
-function createDisplayGrid() {
-  const display = document.getElementById("current-display");
   for (let row = 0; row < 6; row++) {
     for (let col = 0; col < 22; col++) {
       const cell = document.createElement("div");
@@ -264,9 +186,7 @@ function createInputGrid() {
       input.dataset.row = row;
       input.dataset.col = col;
       input.dataset.value = "0";
-      // Add autocomplete off to prevent mobile keyboards from suggesting text
       input.setAttribute("autocomplete", "off");
-      // Add mobile keyboard optimization
       input.setAttribute("inputmode", "text");
       grid.appendChild(input);
     }
@@ -274,7 +194,6 @@ function createInputGrid() {
 }
 
 function setupEventListeners() {
-  const cleanupFunctions = new Set();
   // Color picker buttons
   document.querySelectorAll(".color-btn").forEach((btn) => {
     btn.onclick = () => {
@@ -288,31 +207,33 @@ function setupEventListeners() {
 
   const vestaboard = document.getElementById("vestaboard");
 
-  // Handle cell focus for better mobile experience
+  // Handle cell focus
   vestaboard.addEventListener("focusin", (e) => {
     if (e.target.classList.contains("cell")) {
-      e.target.select(); // Select any existing content
+      e.target.select();
     }
   });
 
-  // Improved touch handling
+  // Touch handling
   vestaboard.addEventListener("touchend", (e) => {
     if (e.target.classList.contains("cell")) {
-      e.preventDefault(); // Prevent zoom on double-tap
+      e.preventDefault();
       if (currentMode === "color" && selectedColor) {
         handleColorSelection(e.target);
       } else {
-        e.target.focus(); // Focus for text input
+        e.target.focus();
       }
     }
   });
 
   // Mouse click handling
   vestaboard.addEventListener("click", (e) => {
-    if (e.target.classList.contains("cell")) {
-      if (currentMode === "color" && selectedColor) {
-        handleColorSelection(e.target);
-      }
+    if (
+      e.target.classList.contains("cell") &&
+      currentMode === "color" &&
+      selectedColor
+    ) {
+      handleColorSelection(e.target);
     }
   });
 
@@ -323,7 +244,7 @@ function setupEventListeners() {
     }
   });
 
-  // Handle keyboard navigation
+  // Keyboard navigation
   vestaboard.addEventListener("keydown", (e) => {
     if (e.target.classList.contains("cell")) {
       handleKeyboardNavigation(e);
@@ -331,10 +252,145 @@ function setupEventListeners() {
   });
 }
 
+// Display Updates
+async function refreshCurrentState() {
+  try {
+    const response = await fetch("/api/board/current");
+    if (!response.ok) throw new Error("Failed to fetch board state");
+
+    const data = await response.json();
+    updateDisplay("live-display", data.grid || createEmptyGrid());
+
+    // Update status
+    const status = document.getElementById("board-status");
+    status.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+    if (data.isLocked) {
+      status.textContent += " (LOCKED)";
+    }
+  } catch (error) {
+    console.error("Board refresh error:", error);
+    showNotification("Failed to refresh board state", "error");
+  }
+}
+
+async function refreshQueueState() {
+  try {
+    const response = await fetch("/api/messages?limit=10");
+    if (!response.ok) throw new Error("Failed to fetch queue");
+
+    const messages = await response.json();
+    const queuedMessages = messages.filter((msg) => !msg.sent);
+
+    updateQueueDisplay(queuedMessages);
+  } catch (error) {
+    console.error("Queue refresh error:", error);
+    showNotification("Failed to refresh queue", "error");
+  }
+}
+
+function updateDisplay(elementId, grid) {
+  const display = document.getElementById(elementId);
+  display.querySelectorAll(".display-cell").forEach((cell) => {
+    const row = parseInt(cell.dataset.row);
+    const col = parseInt(cell.dataset.col);
+    const value = grid[row]?.[col] ?? 0;
+
+    cell.textContent = "";
+    cell.style.backgroundColor = "";
+
+    if (value >= 63 && value <= 70) {
+      cell.style.backgroundColor = getColorForCode(value);
+    } else {
+      const char = REVERSE_CHARACTER_MAP[value] || " ";
+      cell.textContent = char;
+      cell.style.backgroundColor = "#222";
+    }
+  });
+}
+
+function updateQueueDisplay(messages) {
+  const queueDisplay = document.getElementById("queue-display");
+
+  // First clear the display
+  queueDisplay.innerHTML = "";
+
+  // Create a container for the messages
+  const messageContainer = document.createElement("div");
+  messageContainer.className = "queue-list";
+
+  if (messages.length === 0) {
+    messageContainer.innerHTML =
+      '<div class="empty-queue">No messages in queue</div>';
+  } else {
+    messages.forEach((msg, index) => {
+      const messageEl = document.createElement("div");
+      messageEl.className = "queued-message";
+      messageEl.innerHTML = `
+                <div class="queue-info">
+                    <span class="queue-position">#${index + 1}</span>
+                    <span class="timestamp">${new Date(msg.timestamp).toLocaleTimeString()}</span>
+                    <span class="source">${msg.source}</span>
+                    ${msg.locked ? '<span class="lock-indicator">🔒</span>' : ""}
+                </div>
+                <div class="message-preview">
+                    ${renderMessageGrid(msg.grid)}
+                </div>
+            `;
+      messageContainer.appendChild(messageEl);
+    });
+  }
+
+  queueDisplay.appendChild(messageContainer);
+}
+
+function renderMessageGrid(grid) {
+  return grid
+    .map(
+      (row) => `
+        <div class="preview-row">
+            ${row
+              .map(
+                (cell) => `
+                <div class="preview-cell" style="${getCellStyle(cell)}">
+                    ${getCellContent(cell)}
+                </div>
+            `,
+              )
+              .join("")}
+        </div>
+    `,
+    )
+    .join("");
+}
+
+function getCellStyle(value) {
+  if (value >= 63 && value <= 70) {
+    return `background-color: ${getColorForCode(value)};`;
+  }
+  return "background-color: #222;";
+}
+
+function getCellContent(value) {
+  return value >= 63 && value <= 70 ? "" : REVERSE_CHARACTER_MAP[value] || " ";
+}
+
+function getColorForCode(code) {
+  const colorMap = {
+    63: "red",
+    64: "orange",
+    65: "yellow",
+    66: "green",
+    67: "blue",
+    68: "purple",
+    69: "white",
+    70: "black",
+  };
+  return colorMap[code] || "#222";
+}
+
+// Input Handling
 function handleColorSelection(cell) {
-  cell.style.backgroundColor = getComputedStyle(
-    document.querySelector(`[data-color="${selectedColor}"]`),
-  ).backgroundColor;
+  cell.style.backgroundColor = getColorForCode(selectedColor);
   cell.dataset.value = selectedColor;
   cell.value = "";
 }
@@ -342,12 +398,10 @@ function handleColorSelection(cell) {
 function handleTextInput(cell) {
   const char = cell.value.toUpperCase();
   cell.value = char;
+  cell.dataset.value = CHARACTER_MAP[char] || "0";
+
   if (char in CHARACTER_MAP) {
-    cell.dataset.value = CHARACTER_MAP[char];
-    // Optional: Move to next cell after input
     moveToNextCell(cell);
-  } else {
-    cell.dataset.value = "0";
   }
 }
 
@@ -357,7 +411,6 @@ function handleKeyboardNavigation(e) {
   const col = parseInt(cell.dataset.col);
 
   let nextCell;
-
   switch (e.key) {
     case "ArrowRight":
       nextCell = document.querySelector(
@@ -404,137 +457,75 @@ function setMode(mode) {
   document
     .querySelector(".color-picker")
     .classList.toggle("active", mode === "color");
-
   document.querySelectorAll(".mode-switch button").forEach((btn) => {
     btn.classList.toggle("active", btn.onclick.toString().includes(mode));
   });
 }
 
-function updateDisplayGrid(grid) {
-  // Validate grid data
-  if (!grid || !Array.isArray(grid) || grid.length === 0) {
-    console.error("Invalid grid data:", grid);
-    return;
-  }
-
-  document.querySelectorAll(".display-cell").forEach((cell) => {
-    const row = parseInt(cell.dataset.row);
-    const col = parseInt(cell.dataset.col);
-
-    // Safety check for accessing grid positions
-    const value = grid[row]?.[col] ?? 0;
-
-    // Clear previous styles
-    cell.textContent = "";
-    cell.style.backgroundColor = "";
-
-    if (value >= 63 && value <= 70) {
-      cell.style.backgroundColor = getColorForCode(value);
-    } else {
-      const char = REVERSE_CHARACTER_MAP[value];
-      cell.textContent = char || " ";
-      cell.style.backgroundColor = "#222"; // Reset background for text
-    }
-  });
-}
-
-function getColorForCode(code) {
-  const colorMap = {
-    63: "red",
-    64: "orange",
-    65: "yellow",
-    66: "green",
-    67: "blue",
-    68: "purple",
-    69: "white",
-    70: "black",
-  };
-  return colorMap[code] || "#222";
-}
-
-function startAutoRefresh() {
-  // Refresh every 15 seconds
-  refreshInterval = setInterval(refreshCurrentState, 15000);
-}
-
-function stopAutoRefresh() {
-  if (refreshInterval) {
-    clearInterval(refreshInterval);
-  }
-}
-
-async function sendMessage(retries = 3) {
+// Queue Management
+async function queueMessage() {
   const button = document.querySelector(".send-button");
   button.disabled = true;
-  button.textContent = "Sending...";
+  button.textContent = "Queueing...";
 
   try {
-    // Get lock options if enabled
-    const lockEnabled = document.getElementById("lockMessage").checked;
-    const lock = lockEnabled
-      ? {
-          duration: parseInt(document.getElementById("lockDuration").value),
-          reason: document.getElementById("lockReason").value,
-        }
-      : undefined;
+    const grid = getGridValues();
+    const lock = getLockOptions();
 
-    // Build grid data
-    const grid = Array(6)
-      .fill()
-      .map(() => Array(22).fill(0));
-    document.querySelectorAll(".cell").forEach((cell) => {
-      const row = parseInt(cell.dataset.row);
-      const col = parseInt(cell.dataset.col);
-      grid[row][col] = parseInt(cell.dataset.value) || 0;
+    const response = await fetch("/api/board/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ grid, lock }),
     });
 
-    // Optimistically update the display
-    updateDisplayGrid(grid);
+    if (!response.ok) throw new Error("Failed to queue message");
 
-    for (let attempt = 0; attempt < retries; attempt++) {
-      try {
-        if (attempt > 0) {
-          showNotification(
-            `Retry attempt ${attempt + 1}/${retries}`,
-            "warning",
-          );
-          await new Promise((resolve) =>
-            setTimeout(resolve, 1000 * Math.pow(2, attempt)),
-          );
-        }
-
-        const response = await fetch("/api/board/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ grid, lock }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          lastMessageId = data.id;
-          showNotification(
-            `Message sent successfully${lock ? " and locked" : ""}!`,
-            "success",
-          );
-          updateMessageHistory();
-          return; // Exit on success
-        } else {
-          throw new Error("Failed to send message");
-        }
-      } catch (error) {
-        if (attempt === retries - 1) {
-          throw error; // Rethrow on final attempt
-        }
-      }
-    }
+    const data = await response.json();
+    showNotification("Message added to queue", "success");
+    refreshQueueState();
+    clearGrid();
   } catch (error) {
-    console.error("Send error:", error);
-    await refreshCurrentState();
-    showNotification("Error: " + error.message, "error");
+    console.error("Queue error:", error);
+    showNotification("Failed to queue message: " + error.message, "error");
   } finally {
     button.disabled = false;
-    button.textContent = "Send to Vestaboard";
+    button.textContent = "Add to Queue";
   }
+}
+
+// Utility Functions
+function createEmptyGrid() {
+  return Array(6)
+    .fill()
+    .map(() => Array(22).fill(0));
+}
+
+function getGridValues() {
+  const grid = createEmptyGrid();
+  document.querySelectorAll(".cell").forEach((cell) => {
+    const row = parseInt(cell.dataset.row);
+    const col = parseInt(cell.dataset.col);
+    grid[row][col] = parseInt(cell.dataset.value) || 0;
+  });
+  return grid;
+}
+
+function getLockOptions() {
+  const lockEnabled = document.getElementById("lockMessage").checked;
+  if (!lockEnabled) return undefined;
+
+  return {
+    duration: parseInt(document.getElementById("lockDuration").value),
+    reason: document.getElementById("lockReason").value,
+  };
+}
+
+function clearGrid() {
+  document.querySelectorAll(".cell").forEach((cell) => {
+    cell.value = "";
+    cell.dataset.value = "0";
+    cell.style.backgroundColor = "";
+  });
 }
 
 function showNotification(message, type) {
@@ -549,7 +540,7 @@ function showNotification(message, type) {
   }, 3000);
 }
 
-// Clean up on page unload
+// Cleanup
 window.addEventListener("unload", () => {
-  stopAutoRefresh();
+  clearInterval(refreshInterval);
 });

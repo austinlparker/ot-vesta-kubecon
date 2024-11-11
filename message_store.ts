@@ -1,37 +1,74 @@
+import {
+  messageQueueSize,
+  messageSendFailures,
+  messageStoreSize,
+} from "./metrics.ts";
+
 export interface MessageRecord {
   id: string;
   grid: number[][];
   timestamp: Date;
-  source: "webhook" | "custom" | "hello";
+  source: "webhook" | "custom" | "hello" | "bluesky";
   metadata?: Record<string, unknown>;
   locked?: {
     until: Date;
     reason?: string;
   };
+  sent?: boolean;
+  sendAttempts?: number;
 }
 
 export class MessageStore {
   private messages: MessageRecord[] = [];
   private maxHistory: number;
+  private maxRetries: number;
 
-  constructor(maxHistory = 50) {
+  constructor(maxHistory = 50, maxRetries = 3) {
     this.maxHistory = maxHistory;
+    this.maxRetries = maxRetries;
+    messageStoreSize.set(0);
+    messageQueueSize.set(0);
   }
 
-  addMessage(message: Omit<MessageRecord, "id" | "timestamp">): MessageRecord {
+  // Add message to queue
+  addMessage(
+    message: Omit<MessageRecord, "id" | "timestamp" | "sent">,
+  ): MessageRecord {
     const record: MessageRecord = {
       ...message,
       id: crypto.randomUUID(),
       timestamp: new Date(),
+      sent: false,
+      sendAttempts: 0,
     };
 
     this.messages.unshift(record);
 
-    if (this.messages.length > this.maxHistory) {
-      this.messages = this.messages.slice(0, this.maxHistory);
-    }
+    messageStoreSize.set(this.messages.length);
 
     return record;
+  }
+
+  getNextUnsent(): MessageRecord | undefined {
+    return this.messages.find((m) =>
+      !m.sent &&
+      (!m.sendAttempts || m.sendAttempts < this.maxRetries)
+    );
+  }
+
+  markAsSent(id: string): void {
+    const message = this.getMessage(id);
+    if (message) {
+      messageQueueSize.set(this.messages.filter((m) => !m.sent).length);
+      message.sent = true;
+    }
+  }
+
+  markSendAttempt(id: string): void {
+    const message = this.getMessage(id);
+    if (message) {
+      message.sendAttempts = (message.sendAttempts || 0) + 1;
+    }
   }
 
   getLatest(): MessageRecord | undefined {
@@ -50,9 +87,7 @@ export class MessageStore {
     const latest = this.getLatest();
     if (!latest?.locked) return false;
 
-    // Check if lock has expired
     if (new Date() > latest.locked.until) {
-      // Remove the lock
       delete latest.locked;
       return false;
     }
