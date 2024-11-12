@@ -82,18 +82,35 @@ export class MessageStore {
   }
 
   markAsSent(id: string): void {
-    const message = this.getMessage(id);
-    if (message) {
-      messageQueueSize.set(this.messages.filter((m) => !m.sent).length);
-      message.sent = true;
-      this.updateUnsentMetrics()
+    const span = tracer.startSpan("markAsSent");
+    span.setAttribute("message.id", id);
+    
+    try {
+      const message = this.getMessage(id);
+      if (message) {
+        span.setAttribute("message.source", message.source);
+        messageQueueSize.set(this.messages.filter((m) => !m.sent).length);
+        message.sent = true;
+        this.updateUnsentMetrics();
+      }
+    } finally {
+      span.end();
     }
   }
 
   markSendAttempt(id: string): void {
-    const message = this.getMessage(id);
-    if (message) {
-      message.sendAttempts = (message.sendAttempts || 0) + 1;
+    const span = tracer.startSpan("markSendAttempt");
+    span.setAttribute("message.id", id);
+    
+    try {
+      const message = this.getMessage(id);
+      if (message) {
+        span.setAttribute("message.source", message.source);
+        message.sendAttempts = (message.sendAttempts || 0) + 1;
+        span.setAttribute("message.sendAttempts", message.sendAttempts);
+      }
+    } finally {
+      span.end();
     }
   }
 

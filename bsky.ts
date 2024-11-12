@@ -299,6 +299,10 @@ export function initializeJetstream(
           }
         } catch (error) {
           console.error("Error processing Bluesky post:", error);
+          span.recordException(error);
+          span.setStatus({ code: 2 }); // Error status
+        } finally {
+          span.end();
         }
       }
     }
