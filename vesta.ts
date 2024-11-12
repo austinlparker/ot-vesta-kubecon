@@ -1,5 +1,5 @@
 import { messagesSentTotal, vestaboardApiErrors } from "./metrics.ts";
-import { MessageStore } from "./message_store.ts";
+import { MessageStore, MessageRecord } from "./message_store.ts";
 import { CHARACTER_MAP } from "./util.ts";
 
 interface Position {
@@ -100,12 +100,12 @@ export class VestaboardClient {
     Required<VestaboardConfig>,
     "apiKey"
   > = {
-    devMode: false,
-    baseUrl: "https://rw.vestaboard.com",
-    queueInterval: 30000, // 30 seconds
-    retryAttempts: 3,
-    rateLimitMs: 15000, // 15 seconds
-  };
+      devMode: false,
+      baseUrl: "https://rw.vestaboard.com",
+      queueInterval: 30000, // 30 seconds
+      retryAttempts: 3,
+      rateLimitMs: 15000, // 15 seconds
+    };
   private static readonly VBML_URL = "https://vbml.vestaboard.com/compose";
   constructor(
     config: VestaboardConfig,
@@ -161,6 +161,10 @@ export class VestaboardClient {
   }
 
   private async processNextMessage(): Promise<void> {
+    if (this.messageStore.isQueuePaused()) {
+      return;
+    }
+
     const message = this.messageStore.getNextUnsent();
     if (!message) return;
 
@@ -306,34 +310,26 @@ export class VestaboardClient {
 
   async getCurrentState(): Promise<VestaboardMessage> {
     try {
-      if (this.config.devMode) {
-        return Array(6).fill(undefined).map(() => Array(22).fill(0));
+      const response = await fetch(`${this.config.baseUrl}/`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Vestaboard-Read-Write-Key": this.config.apiKey,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          `Failed to get current state: ${response.statusText}`,
+        );
       }
 
-      return this.retryWithBackoff(async () => {
-        await this.rateLimiter.waitForNextSlot();
-
-        const response = await fetch(`${this.config.baseUrl}/`, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Vestaboard-Read-Write-Key": this.config.apiKey,
-          },
-        });
-
-        if (!response.ok) {
-          throw new Error(
-            `Failed to get current state: ${response.statusText}`,
-          );
-        }
-
-        const data = await response.json();
-        try {
-          return JSON.parse(data.currentMessage.layout);
-        } catch (error) {
-          throw new Error(`Invalid response format: ${error.message}`);
-        }
-      });
+      const data = await response.json();
+      try {
+        return JSON.parse(data.currentMessage.layout);
+      } catch (error) {
+        throw new Error(`Invalid response format: ${error.message}`);
+      }
     } catch (error) {
       vestaboardApiErrors.labels({ operation: "getCurrentState" }).inc();
       throw error;

@@ -10,6 +10,7 @@ import {
   httpRequestsTotal,
   messageStoreLockouts,
   vestaboardApiErrors,
+  queuePauseTotal
 } from "./metrics.ts";
 import { MessageStore } from "./message_store.ts";
 import { initializeJetstream } from "./bsky.ts";
@@ -18,9 +19,7 @@ import { ContentFilter } from "./mod.ts";
 // Configuration
 const isDev = Deno.env.get("DEV_MODE") === "true";
 const port = parseInt(Deno.env.get("PORT") || "3000");
-const vestaboardApiKey = isDev
-  ? "fake-key"
-  : Deno.env.get("VESTABOARD_API_KEY");
+const vestaboardApiKey = Deno.env.get("VESTABOARD_API_KEY");
 
 if (!isDev && !vestaboardApiKey) {
   console.error("VESTABOARD_API_KEY is required in production mode");
@@ -38,8 +37,8 @@ const vc = new VestaboardClient({
   apiKey: vestaboardApiKey!,
   devMode: isDev,
   baseUrl: "https://rw.vestaboard.com",
-  queueInterval: parseInt(Deno.env.get("QUEUE_INTERVAL_MS") || "30000"),
-  rateLimitMs: parseInt(Deno.env.get("RATE_LIMIT_MS") || "15000"),
+  queueInterval: parseInt(Deno.env.get("QUEUE_INTERVAL_MS") || "60000"),
+  rateLimitMs: parseInt(Deno.env.get("RATE_LIMIT_MS") || "30000"),
   retryAttempts: parseInt(Deno.env.get("RETRY_ATTEMPTS") || "3"),
 }, messageStore);
 const apiRouter = new Router({ prefix: "/api" });
@@ -119,16 +118,52 @@ apiRouter
       throw error;
     }
   })
+  .post("/board/lock", async (ctx) => {
+    try {
+      const { reason } = await ctx.request.body.json();
+      messageStore.lock(reason);
+      ctx.response.body = { status: "success", state: messageStore.getState() };
+    } catch (error) {
+      ctx.response.status = Status.BadRequest;
+      ctx.response.body = { error: "Invalid request body" };
+    }
+  })
+  .post("/board/unlock", (ctx) => {
+    messageStore.unlock();
+    ctx.response.body = { status: "success", state: messageStore.getState() };
+  })
+  .post("/board/queue/pause", (ctx) => {
+    try {
+      messageStore.pauseQueue();
+      queuePauseTotal.inc();
+      ctx.response.body = { status: "success", state: messageStore.getState() };
+    } catch (error) {
+      ctx.response.status = Status.InternalServerError;
+      ctx.response.body = { error: "Failed to pause queue" };
+    }
+  })
+  .post("/board/queue/resume", (ctx) => {
+    messageStore.resumeQueue();
+    ctx.response.body = { status: "success", state: messageStore.getState() };
+  })
+  .post("/messages/:id/prioritize", async (ctx) => {
+    const message = messageStore.getMessage(ctx.params.id);
+    if (!message) {
+      ctx.response.status = Status.NotFound;
+      return;
+    }
+    messageStore.pushToFront(message);
+    ctx.response.body = { status: "success", message };
+  })
   .get("/board/current", async (ctx) => {
     const currentState = await vc.getCurrentState();
     const lastMessage = messageStore.getLatest();
-    const isLocked = messageStore.isLocked();
+    const state = messageStore.getState();
 
     ctx.response.body = {
-      grid: currentState ||
-        Array(6).fill(undefined).map(() => Array(22).fill(0)),
+      grid: currentState || Array(6).fill(undefined).map(() => Array(22).fill(0)),
       lastMessage,
-      isLocked,
+      state,
     };
   })
   .get("/messages", (ctx) => {
@@ -162,12 +197,10 @@ apiRouter
   .post("/webhook", async (ctx) => {
     if (messageStore.isLocked()) {
       messageStoreLockouts.inc();
-      const lock = messageStore.getCurrentLock()!;
       ctx.response.status = Status.Locked;
       ctx.response.body = {
         error: "Board is currently locked",
-        lockedUntil: lock.until,
-        reason: lock.reason,
+        state: messageStore.getState()
       };
       return;
     }
@@ -194,7 +227,7 @@ apiRouter
     }
   })
   .post("/board/send", async (ctx) => {
-    const { grid, lock } = await ctx.request.body.json();
+    const { grid } = await ctx.request.body.json();
 
     // Validate grid structure
     if (
@@ -211,30 +244,8 @@ apiRouter
       return;
     }
 
-    // Validate lock if present
-    if (lock) {
-      if (
-        typeof lock.duration !== "number" ||
-        lock.duration < 1 ||
-        lock.duration > 60 ||
-        (lock.reason && typeof lock.reason !== "string")
-      ) {
-        ctx.response.status = Status.BadRequest;
-        ctx.response.body = { error: "Invalid lock parameters" };
-        return;
-      }
-    }
-
     try {
-      const record = await vc.queueMessage(grid, "custom", {
-        locked: lock
-          ? {
-            until: new Date(Date.now() + lock.duration * 60000),
-            reason: lock.reason,
-          }
-          : undefined,
-      });
-
+      const record = await vc.queueMessage(grid, "custom");
       ctx.response.status = Status.OK;
       ctx.response.body = { status: "success", id: record.id };
     } catch (error) {
@@ -286,8 +297,7 @@ metricsApp.addEventListener("listen", ({ hostname, port }) => {
 
 app.addEventListener("listen", ({ hostname, port, secure }) => {
   console.log(
-    `🚀 Server listening on: ${secure ? "https://" : "http://"}${
-      hostname ?? "localhost"
+    `🚀 Server listening on: ${secure ? "https://" : "http://"}${hostname ?? "localhost"
     }:${port}`,
   );
 });

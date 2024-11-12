@@ -51,3 +51,18 @@ export const messageSendFailures = Counter.with({
   help: "Number of failed message send attempts",
   labels: ["source"],
 });
+
+export const unsentMessagesGauge = Gauge.with({
+  name: "unsent_message_gauge",
+  help: "Number of unsent messages",
+});
+
+export const oldestUnsentMessageAge = Gauge.with({
+  name: "oldest_unsent_message_age_seconds",
+  help: "Age of oldest unsent message",
+});
+
+export const queuePauseTotal = Counter.with({
+  name: "queue_pause_total",
+  help: "Number of times the message queue was paused",
+});

@@ -129,6 +129,7 @@ const REVERSE_CHARACTER_MAP = {
 let currentMode = "text";
 let selectedColor = null;
 let refreshInterval;
+let isFrozen = false;
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
@@ -142,16 +143,14 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshCurrentState();
   refreshQueueState();
 
-  // Set up auto-refresh
-  setInterval(refreshCurrentState, 15000); // Every 15 seconds
-  setInterval(refreshQueueState, 5000); // Every 5 seconds
+  // Set up auto-refresh with proper cleanup
+  const stateInterval = setInterval(refreshCurrentState, 15000);
+  const queueInterval = setInterval(refreshQueueState, 5000);
 
-  // Lock checkbox handler
-  document.getElementById("lockMessage").addEventListener("change", (e) => {
-    const duration = document.getElementById("lockDuration");
-    const reason = document.getElementById("lockReason");
-    duration.disabled = !e.target.checked;
-    reason.disabled = !e.target.checked;
+  // Cleanup on page unload
+  window.addEventListener("unload", () => {
+    clearInterval(stateInterval);
+    clearInterval(queueInterval);
   });
 });
 
@@ -259,17 +258,48 @@ async function refreshCurrentState() {
     if (!response.ok) throw new Error("Failed to fetch board state");
 
     const data = await response.json();
+    if (!data.state) throw new Error("Invalid board state received");
+
     updateDisplay("live-display", data.grid || createEmptyGrid());
 
-    // Update status
+    // Update status and control buttons
     const status = document.getElementById("board-status");
+    const lockBtn = document.getElementById("lockBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+
+    if (!status || !lockBtn || !pauseBtn) {
+      throw new Error("Required UI elements not found");
+    }
+
     status.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
-    if (data.isLocked) {
-      status.textContent += " (LOCKED)";
+
+    // Update lock button state
+    if (data.state.locked) {
+      lockBtn.innerHTML = '<span class="icon">🔓</span> Unlock Board';
+      lockBtn.classList.add("active");
+      status.textContent += ` (LOCKED${
+        data.state.lockReason ? `: ${data.state.lockReason}` : ""
+      })`;
+    } else {
+      lockBtn.innerHTML = '<span class="icon">🔒</span> Lock Board';
+      lockBtn.classList.remove("active");
+    }
+
+    // Update pause button state
+    if (data.state.queuePaused) {
+      pauseBtn.innerHTML = '<span class="icon">▶️</span> Resume Queue';
+      pauseBtn.classList.add("active");
+      status.textContent += " (QUEUE PAUSED)";
+    } else {
+      pauseBtn.innerHTML = '<span class="icon">⏸️</span> Pause Queue';
+      pauseBtn.classList.remove("active");
     }
   } catch (error) {
     console.error("Board refresh error:", error);
-    showNotification("Failed to refresh board state", "error");
+    showNotification(
+      "Failed to refresh board state: " + error.message,
+      "error",
+    );
   }
 }
 
@@ -310,37 +340,34 @@ function updateDisplay(elementId, grid) {
 
 function updateQueueDisplay(messages) {
   const queueDisplay = document.getElementById("queue-display");
-
-  // First clear the display
   queueDisplay.innerHTML = "";
 
-  // Create a container for the messages
-  const messageContainer = document.createElement("div");
-  messageContainer.className = "queue-list";
-
   if (messages.length === 0) {
-    messageContainer.innerHTML =
+    queueDisplay.innerHTML =
       '<div class="empty-queue">No messages in queue</div>';
-  } else {
-    messages.forEach((msg, index) => {
-      const messageEl = document.createElement("div");
-      messageEl.className = "queued-message";
-      messageEl.innerHTML = `
-                <div class="queue-info">
-                    <span class="queue-position">#${index + 1}</span>
-                    <span class="timestamp">${new Date(msg.timestamp).toLocaleTimeString()}</span>
-                    <span class="source">${msg.source}</span>
-                    ${msg.locked ? '<span class="lock-indicator">🔒</span>' : ""}
-                </div>
-                <div class="message-preview">
-                    ${renderMessageGrid(msg.grid)}
-                </div>
-            `;
-      messageContainer.appendChild(messageEl);
-    });
+    return;
   }
 
-  queueDisplay.appendChild(messageContainer);
+  messages.forEach((msg, index) => {
+    const messageEl = document.createElement("div");
+    messageEl.className = "queued-message";
+    messageEl.innerHTML = `
+            <div class="queue-info">
+                <span class="queue-position">#${index + 1}</span>
+                <span class="timestamp">${new Date(msg.timestamp).toLocaleTimeString()}</span>
+                <span class="source">${msg.source}</span>
+                <div class="message-controls">
+                    <button onclick="prioritizeMessage('${msg.id}')" class="control-btn priority" title="Move to front of queue">
+                        <span class="icon">⏫</span>
+                    </button>
+                </div>
+            </div>
+            <div class="message-preview">
+                ${renderMessageGrid(msg.grid)}
+            </div>
+        `;
+    queueDisplay.appendChild(messageEl);
+  });
 }
 
 function renderMessageGrid(grid) {
@@ -470,12 +497,11 @@ async function queueMessage() {
 
   try {
     const grid = getGridValues();
-    const lock = getLockOptions();
 
     const response = await fetch("/api/board/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ grid, lock }),
+      body: JSON.stringify({ grid }),
     });
 
     if (!response.ok) throw new Error("Failed to queue message");
@@ -490,6 +516,36 @@ async function queueMessage() {
   } finally {
     button.disabled = false;
     button.textContent = "Add to Queue";
+  }
+}
+
+async function freezeBoard() {
+  try {
+    const response = await fetch("/api/board/freeze", {
+      method: "POST",
+    });
+
+    if (!response.ok) throw new Error("Failed to freeze the board");
+
+    showNotification("Board frozen", "success");
+  } catch (error) {
+    console.error("Freeze board error:", error);
+    showNotification("Failed to freeze the board: " + error.message, "error");
+  }
+}
+
+async function unfreezeBoard() {
+  try {
+    const response = await fetch("/api/board/unfreeze", {
+      method: "POST",
+    });
+
+    if (!response.ok) throw new Error("Failed to unfreeze the board");
+
+    showNotification("Board unfrozen", "success");
+  } catch (error) {
+    console.error("Unfreeze board error:", error);
+    showNotification("Failed to unfreeze the board: " + error.message, "error");
   }
 }
 
@@ -538,6 +594,121 @@ function showNotification(message, type) {
     notification.classList.add("fade-out");
     setTimeout(() => notification.remove(), 300);
   }, 3000);
+}
+
+async function toggleBoardLock() {
+  try {
+    const response = await fetch("/api/board/current");
+    if (!response.ok) throw new Error("Failed to fetch board state");
+
+    const data = await response.json();
+    const isLocked = data.state.locked;
+
+    if (isLocked) {
+      // Unlock
+      const response = await fetch("/api/board/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!response.ok) throw new Error("Failed to unlock board");
+    } else {
+      // Lock
+      const reason = prompt("Enter reason for locking (optional):");
+      const response = await fetch("/api/board/lock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+
+      if (!response.ok) throw new Error("Failed to lock board");
+    }
+
+    await refreshCurrentState();
+    showNotification(
+      `Board ${isLocked ? "unlocked" : "locked"} successfully`,
+      "success",
+    );
+  } catch (error) {
+    console.error("Lock toggle error:", error);
+    showNotification(
+      `Failed to ${isLocked ? "unlock" : "lock"} board: ${error.message}`,
+      "error",
+    );
+  }
+}
+
+async function toggleQueueProcessing() {
+  try {
+    const response = await fetch("/api/board/current");
+    if (!response.ok) throw new Error("Failed to fetch board state");
+
+    const data = await response.json();
+    const isPaused = data.state.queuePaused;
+
+    const toggleResponse = await fetch(
+      `/api/board/queue/${isPaused ? "resume" : "pause"}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    if (!toggleResponse.ok)
+      throw new Error(`Failed to ${isPaused ? "resume" : "pause"} queue`);
+
+    await refreshCurrentState();
+    showNotification(
+      `Queue ${isPaused ? "resumed" : "paused"} successfully`,
+      "success",
+    );
+  } catch (error) {
+    console.error("Queue toggle error:", error);
+    showNotification(`Failed to toggle queue state: ${error.message}`, "error");
+  }
+}
+
+async function prioritizeMessage(messageId) {
+  if (!messageId) {
+    showNotification("Invalid message ID", "error");
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/messages/${messageId}/prioritize`, {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || "Failed to prioritize message");
+    }
+
+    refreshQueueState();
+    showNotification("Message moved to front of queue", "success");
+  } catch (error) {
+    showNotification(`Failed to prioritize message: ${error.message}`, "error");
+  }
+}
+
+async function pushTelescope() {
+  try {
+    const response = await fetch("/api/hello", {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to queue telescope message");
+    }
+
+    const data = await response.json();
+    showNotification("Telescope message queued", "success");
+    await refreshQueueState();
+  } catch (error) {
+    console.error("Telescope error:", error);
+    showNotification("Failed to queue telescope: " + error.message, "error");
+  }
 }
 
 // Cleanup
