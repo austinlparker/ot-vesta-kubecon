@@ -59,7 +59,7 @@ export class MessageStore {
   markAsSent(id: string): void {
     const message = this.getMessage(id);
     if (message) {
-      messageQueueSize.set(this.messages.filter((m) => !m.sent).length);
+      messageQueueSize.add(-1);
       message.sent = true;
     }
   }

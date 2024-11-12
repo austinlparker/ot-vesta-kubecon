@@ -19,35 +19,32 @@ export const httpRequestDuration = Histogram.with({
 });
 
 // API-specific metrics
-export const messagesSentTotal = Counter.with({
-  name: "messages_sent_total",
-  help: "Total number of messages sent to Vestaboard",
-  labels: ["source"], // source can be 'hello', 'webhook', 'custom', 'bluesky'
+export const messagesSentTotal = meter.createCounter("messages_sent_total", {
+  description: "Total number of messages sent to Vestaboard",
+  unit: "1",
 });
 
-export const messageStoreLockouts = Counter.with({
-  name: "message_store_lockouts_tzotal",
-  help: "Number of times messages were blocked due to store being locked",
+export const messageStoreLockouts = meter.createCounter("message_store_lockouts_total", {
+  description: "Number of times messages were blocked due to store being locked",
+  unit: "1",
 });
 
-export const messageStoreSize = Gauge.with({
-  name: "message_store_size",
-  help: "Current number of messages in the store",
+export const messageStoreSize = meter.createUpDownCounter("message_store_size", {
+  description: "Current number of messages in the store",
+  unit: "1",
 });
 
-export const vestaboardApiErrors = Counter.with({
-  name: "vestaboard_api_errors_total",
-  help: "Number of Vestaboard API errors",
-  labels: ["operation"], // operation can be 'send', 'format', 'getCurrentState'
+export const vestaboardApiErrors = meter.createCounter("vestaboard_api_errors_total", {
+  description: "Number of Vestaboard API errors",
+  unit: "1",
 });
 
-export const messageQueueSize = Gauge.with({
-  name: "message_queue_size",
-  help: "Number of messages waiting to be sent",
+export const messageQueueSize = meter.createUpDownCounter("message_queue_size", {
+  description: "Number of messages waiting to be sent",
+  unit: "1",
 });
 
-export const messageSendFailures = Counter.with({
-  name: "message_send_failures_total",
-  help: "Number of failed message send attempts",
-  labels: ["source"],
+export const messageSendFailures = meter.createCounter("message_send_failures_total", {
+  description: "Number of failed message send attempts",
+  unit: "1",
 });

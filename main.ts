@@ -272,7 +272,12 @@ app.use(async (ctx, next) => {
 
 // Error event handling
 app.addEventListener("error", (evt) => {
-  console.error("Application Error:", evt.error);
+  const span = trace.getActiveSpan();
+  if (span) {
+    console.error(`Application Error (trace_id: ${span.spanContext().traceId}):`, evt.error);
+  } else {
+    console.error("Application Error (no active span):", evt.error);
+  }
 });
 
 // Start server
