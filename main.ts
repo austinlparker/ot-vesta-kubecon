@@ -53,18 +53,39 @@ const metricsApp = new Application();
 vc.startProcessingQueue();
 
 app.use(async (ctx, next) => {
+  const span = tracer.startSpan(`HTTP ${ctx.request.method} ${ctx.request.url.pathname}`);
   const start = Date.now();
+  
+  // Add HTTP attributes to span
+  span.setAttribute("http.method", ctx.request.method);
+  span.setAttribute("http.url", ctx.request.url.toString());
+  span.setAttribute("http.target", ctx.request.url.pathname);
+  
   try {
     await next();
+    span.setAttribute("http.status_code", ctx.response.status);
+  } catch (err) {
+    span.recordException(err);
+    span.setAttribute("http.status_code", ctx.response.status);
+    throw err;
   } finally {
     const ms = Date.now() - start;
     const path = ctx.request.url.pathname;
     const method = ctx.request.method;
     const status = ctx.response.status;
 
-    httpRequestsTotal.labels({ method, path, status: String(status) }).inc();
-    httpRequestDuration.labels({ method, path })
-      .observe(ms / 1000); // Convert to seconds
+    // Record metrics
+    httpRequestsTotal.add(1, {
+      method,
+      path,
+      status: String(status)
+    });
+    httpRequestDuration.record(ms / 1000, {
+      method,
+      path
+    });
+    
+    span.end();
   }
 });
 
