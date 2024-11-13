@@ -40,8 +40,7 @@ async function loginWithRetry(
         const waitTime = Math.max(resetTimestamp - now, 0);
 
         console.warn(
-          `Rate limit exceeded. Waiting until rate limit reset: ${
-            new Date(resetTimestamp).toISOString()
+          `Rate limit exceeded. Waiting until rate limit reset: ${new Date(resetTimestamp).toISOString()
           }`,
         );
 
@@ -60,8 +59,7 @@ async function loginWithRetry(
 
       const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
       console.warn(
-        `Login attempt ${attempt} failed, retrying in ${
-          delayMs / 1000
+        `Login attempt ${attempt} failed, retrying in ${delayMs / 1000
         } seconds:`,
         error,
       );
@@ -303,7 +301,5 @@ export function initializeJetstream(
       }
     }
   });
-
-  jetstream.start();
   return jetstream;
 }

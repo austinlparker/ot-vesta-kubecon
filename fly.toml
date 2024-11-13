@@ -26,6 +26,10 @@ processes = ['app']
 port = 9001
 path = "/metrics"
 
+[mounts]
+source = "vesta_data"
+destination = "/data"
+
 [[vm]]
 memory = '1GB'
 cpu_kind = 'shared'

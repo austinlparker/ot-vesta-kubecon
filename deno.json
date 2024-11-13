@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --allow-env --allow-net --allow-read --watch main.ts"
+    "dev": "deno run --allow-env --allow-net --allow-read --allow-write --watch main.ts"
   },
   "imports": {
     "@atcute/bluesky": "npm:@atcute/bluesky@^1.0.8",

@@ -1,4 +1,4 @@
-import { messagesSentTotal, vestaboardApiErrors } from "./metrics.ts";
+import { messagesSentTotal, vestaboardApiErrors, messageSendFailures } from "./metrics.ts";
 import { MessageStore, MessageRecord } from "./message_store.ts";
 import { CHARACTER_MAP } from "./util.ts";
 
@@ -91,22 +91,24 @@ class RateLimiter {
 }
 
 export class VestaboardClient {
+  private static readonly MAX_RETRIES = 2; // Hard limit of 2 attempts
   private readonly config: Required<VestaboardConfig>;
   private readonly rateLimiter: RateLimiter;
-  private readonly messageStore: MessageStore;
-  private processingInterval: number | undefined;
+  private messageStore: MessageStore;
+  private processingMessage: boolean = false;
+  private queueTimer?: number;
+  private lastSendTime?: number;
 
-  private static readonly DEFAULT_CONFIG: Omit<
-    Required<VestaboardConfig>,
-    "apiKey"
-  > = {
-      devMode: false,
-      baseUrl: "https://rw.vestaboard.com",
-      queueInterval: 30000, // 30 seconds
-      retryAttempts: 3,
-      rateLimitMs: 15000, // 15 seconds
-    };
+  private static readonly DEFAULT_CONFIG: Omit<Required<VestaboardConfig>, "apiKey"> = {
+    devMode: false,
+    baseUrl: "https://rw.vestaboard.com",
+    queueInterval: 30000, // 30 seconds
+    retryAttempts: 2, // Align with MAX_RETRIES
+    rateLimitMs: 15000, // 15 seconds
+  };
+
   private static readonly VBML_URL = "https://vbml.vestaboard.com/compose";
+
   constructor(
     config: VestaboardConfig,
     messageStore: MessageStore,
@@ -140,130 +142,100 @@ export class VestaboardClient {
   }
 
   startProcessingQueue(): void {
-    if (this.processingInterval) return;
+    if (this.queueTimer) {
+      clearInterval(this.queueTimer);
+    }
 
-    console.log(
-      `Starting message queue processor (interval: ${this.config.queueInterval}ms)`,
-    );
-
-    this.processingInterval = setInterval(() => {
-      this.processNextMessage().catch((error) => {
-        console.error("Error processing message queue:", error);
-      });
+    this.queueTimer = setInterval(() => {
+      this.processQueue().catch(console.error);
     }, this.config.queueInterval);
+
+    // Start processing immediately
+    this.processQueue().catch(console.error);
   }
 
   stopProcessingQueue(): void {
-    if (this.processingInterval) {
-      clearInterval(this.processingInterval);
-      this.processingInterval = undefined;
+    if (this.queueTimer) {
+      clearInterval(this.queueTimer);
+      this.queueTimer = undefined;
     }
   }
 
-  private async processNextMessage(): Promise<void> {
-    if (this.messageStore.isQueuePaused()) {
+  private async processQueue() {
+    if (this.processingMessage || this.messageStore.isQueuePaused()) {
       return;
     }
 
-    const message = this.messageStore.getNextUnsent();
-    if (!message) return;
-
     try {
-      await this.sendMessage(message.grid);
-      this.messageStore.markAsSent(message.id);
-      messagesSentTotal.labels({ source: message.source }).inc();
-    } catch (error) {
-      this.messageStore.markSendAttempt(message.id);
-      vestaboardApiErrors.labels({ operation: "send" }).inc();
-      throw error;
+      this.processingMessage = true;
+      const nextMessage = this.messageStore.getNextUnsent();
+
+      if (!nextMessage) {
+        return;
+      }
+
+      // Respect rate limiting
+      const now = Date.now();
+      if (this.lastSendTime && (now - this.lastSendTime) < this.config.rateLimitMs) {
+        return;
+      }
+
+      console.log(`Processing message ${nextMessage.id} from source: ${nextMessage.source}`);
+
+      try {
+        await this.rateLimiter.waitForNextSlot();
+        await this.sendMessage(nextMessage.grid);
+        this.messageStore.markAsSent(nextMessage.id);
+        this.lastSendTime = now;
+        messagesSentTotal.labels({ source: nextMessage.source }).inc();
+      } catch (error) {
+        console.error(`Failed to send message ${nextMessage.id}:`, error);
+        this.messageStore.markSendAttempt(nextMessage.id);
+        vestaboardApiErrors.labels({ operation: "send" }).inc();
+
+        // If this was the second attempt, remove from queue
+        if (nextMessage.sendAttempts && nextMessage.sendAttempts >= VestaboardClient.MAX_RETRIES - 1) {
+          console.error(`Message ${nextMessage.id} failed twice, removing from queue`);
+          messageSendFailures.inc();
+          this.messageStore.removeFromQueue(nextMessage.id);
+        }
+      }
+    } finally {
+      this.processingMessage = false;
     }
   }
 
-  private async retryWithBackoff<T>(operation: () => Promise<T>): Promise<T> {
-    for (let attempt = 0; attempt < this.config.retryAttempts; attempt++) {
-      try {
-        if (attempt > 0) {
-          const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-        return await operation();
-      } catch (error) {
-        if (attempt === this.config.retryAttempts - 1) throw error;
-        console.warn(`Attempt ${attempt + 1} failed, retrying...`, error);
-      }
+  async queueMessage(
+    grid: number[][],
+    source: MessageRecord["source"],
+    metadata?: Record<string, unknown>
+  ): Promise<MessageRecord> {
+    if (this.messageStore.isLocked()) {
+      throw new Error("Message store is locked");
     }
-    throw new Error("Should not reach here");
+
+    return this.messageStore.addMessage({
+      grid,
+      source,
+      metadata
+    });
   }
 
   async formatMessage(message: VBMLMessage): Promise<VestaboardMessage> {
-    try {
-      return this.retryWithBackoff(async () => {
-        const response = await fetch(VestaboardClient.VBML_URL, {
-          headers: {
-            "Content-Type": "application/json",
-          },
-          method: "POST",
-          body: JSON.stringify(message),
-        });
+    const response = await fetch(VestaboardClient.VBML_URL, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+      body: JSON.stringify(message),
+    });
 
-        if (!response.ok) {
-          throw new Error(`VBML formatting failed: ${response.statusText}`);
-        }
-
-        return response.json();
-      });
-    } catch (error) {
+    if (!response.ok) {
       vestaboardApiErrors.labels({ operation: "format" }).inc();
-      throw error;
+      throw new Error(`VBML formatting failed: ${response.statusText}`);
     }
-  }
 
-  async formatBlueskyPost(
-    hydratedPost: { displayName: string; handle: string; postText: string },
-  ): Promise<VestaboardMessage> {
-    const maxLength = 22;
-    // Truncate texts, leaving room for the blue square in username line
-    const displayName = hydratedPost.displayName.slice(0, maxLength - 1); // -1 for square only
-    const handle = hydratedPost.handle.slice(0, maxLength - 1); // -1 for @ symbol
-    const truncatedText = hydratedPost.postText.slice(0, maxLength * 3); // Allow for 3 lines of text
-
-    const message: VBMLMessage = {
-      components: [
-        // Header: Blue square + username (no extra space)
-        {
-          template: `{67}${displayName}`, // Removed the space after the square
-          style: {
-            height: 1,
-            width: maxLength,
-            justify: "left",
-            absolutePosition: { x: 0, y: 0 },
-          },
-        },
-        // Handle with @ prefix
-        {
-          template: `@${handle}`,
-          style: {
-            height: 1,
-            width: maxLength,
-            justify: "left",
-            absolutePosition: { x: 0, y: 1 },
-          },
-        },
-        // Empty line is handled by positioning
-        // Post text
-        {
-          template: truncatedText,
-          style: {
-            height: 3, // Allow up to 3 lines for the post text
-            width: maxLength,
-            justify: "left",
-            absolutePosition: { x: 0, y: 3 },
-          },
-        },
-      ],
-    };
-
-    return this.formatMessage(message);
+    return response.json();
   }
 
   private async sendMessage(message: VestaboardMessage): Promise<void> {
@@ -273,42 +245,21 @@ export class VestaboardClient {
       return;
     }
 
-    await this.retryWithBackoff(async () => {
-      await this.rateLimiter.waitForNextSlot();
-
-      const response = await fetch(`${this.config.baseUrl}/`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Vestaboard-Read-Write-Key": this.config.apiKey,
-        },
-        body: JSON.stringify(message),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to send message: ${response.statusText}`);
-      }
+    const response = await fetch(`${this.config.baseUrl}/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vestaboard-Read-Write-Key": this.config.apiKey,
+      },
+      body: JSON.stringify(message),
     });
+
+    if (!response.ok) {
+      throw new Error(`Failed to send message: ${response.statusText}`);
+    }
   }
 
-  async formatAndSendMessage(message: VBMLMessage): Promise<void> {
-    const formattedMessage = await this.formatMessage(message);
-    await this.sendMessage(formattedMessage);
-  }
-
-  async queueMessage(
-    message: VestaboardMessage,
-    source: MessageRecord["source"],
-    metadata?: Record<string, unknown>,
-  ): Promise<MessageRecord> {
-    return this.messageStore.addMessage({
-      grid: message,
-      source,
-      metadata,
-    });
-  }
-
-  async getCurrentState(): Promise<VestaboardMessage> {
+  async getCurrentState(): Promise<VestaboardMessage | null> {
     try {
       const response = await fetch(`${this.config.baseUrl}/`, {
         method: "GET",
@@ -319,23 +270,24 @@ export class VestaboardClient {
       });
 
       if (!response.ok) {
-        throw new Error(
-          `Failed to get current state: ${response.statusText}`,
-        );
+        throw new Error(`Failed to get current state: ${response.statusText}`);
       }
 
       const data = await response.json();
       try {
         return JSON.parse(data.currentMessage.layout);
       } catch (error) {
-        throw new Error(`Invalid response format: ${error.message}`);
+        console.error("Failed to parse current message layout:", error);
+        return null;
       }
     } catch (error) {
       vestaboardApiErrors.labels({ operation: "getCurrentState" }).inc();
-      throw error;
+      console.error("Failed to get current state:", error);
+      return null;
     }
   }
 
+  // Utility methods for creating messages
   static createCenteredMessage(text: string): VBMLMessage {
     return {
       components: [
@@ -352,248 +304,61 @@ export class VestaboardClient {
     };
   }
 
-  static createEventHeader(
-    eventType: "star" | "issue" | "pull_request",
-    timestamp: Date,
-  ): VBMLMessage {
-    const headers: Record<string, { text: string; color: number }> = {
-      star: { text: "STARRED", color: 65 }, // Yellow
-      issue: { text: "ISSUE OPENED", color: 63 }, // Red
-      pull_request: { text: "PR CLOSED", color: 66 }, // Green
-    };
+  // Create a Bluesky post format
+  async formatBlueskyPost(
+    hydratedPost: { displayName: string; handle: string; postText: string },
+  ): Promise<VestaboardMessage> {
+    const maxLength = 22;
+    const displayName = hydratedPost.displayName.slice(0, maxLength - 1);
+    const handle = hydratedPost.handle.slice(0, maxLength - 1);
+    const truncatedText = hydratedPost.postText.slice(0, maxLength * 3);
 
-    const header = headers[eventType];
-    const time = timestamp.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-
-    return {
-      components: [{
-        template: `{${header.color}}${header.text}`,
-        style: {
-          height: 1,
-          width: 12,
-          absolutePosition: { x: 0, y: 0 },
-        },
-      }, {
-        template: time,
-        style: {
-          height: 1,
-          width: 10,
-          justify: "right",
-          absolutePosition: { x: 12, y: 0 },
-        },
-      }],
-    };
-  }
-
-  // Create the main content section
-  static createMainContent(content: string): VBMLMessage {
-    return {
-      components: [{
-        template: content,
-        style: {
-          height: 3,
-          justify: "center",
-          align: "center",
-          absolutePosition: { x: 0, y: 1 },
-        },
-      }],
-    };
-  }
-
-  // Create the footer with repo and user
-  static createFooter(repoName: string, userLogin: string): VBMLMessage {
-    return {
-      components: [{
-        template: repoName,
-        style: {
-          height: 1,
-          justify: "right",
-          absolutePosition: { x: 0, y: 4 },
-        },
-      }, {
-        template: userLogin,
-        style: {
-          height: 1,
-          justify: "right",
-          absolutePosition: { x: 0, y: 5 },
-        },
-      }],
-    };
-  }
-
-  // Combine all components into a single message
-  static createEventMessage(params: {
-    eventType: "star" | "issue" | "pull_request";
-    timestamp: Date;
-    repoName: string;
-    userLogin: string;
-    mainContent: string;
-  }): VBMLMessage {
-    return {
+    const message: VBMLMessage = {
       components: [
-        ...this.createEventHeader(params.eventType, params.timestamp)
-          .components,
-        ...this.createMainContent(params.mainContent).components,
-        ...this.createFooter(params.repoName, params.userLogin).components,
+        {
+          template: `{67}${displayName}`,
+          style: {
+            height: 1,
+            width: maxLength,
+            justify: "left",
+            absolutePosition: { x: 0, y: 0 },
+          },
+        },
+        {
+          template: `@${handle}`,
+          style: {
+            height: 1,
+            width: maxLength,
+            justify: "left",
+            absolutePosition: { x: 0, y: 1 },
+          },
+        },
+        {
+          template: truncatedText,
+          style: {
+            height: 3,
+            width: maxLength,
+            justify: "left",
+            absolutePosition: { x: 0, y: 3 },
+          },
+        },
       ],
     };
+
+    return this.formatMessage(message);
   }
 
   static createTelescope(): VBMLMessage {
-    // 67 blue
-    // 65 yellow
     return {
       components: [
         {
           rawCharacters: [
-            [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-            ],
-            [
-              0,
-              0,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-              0,
-              67,
-              67,
-              0,
-              0,
-              67,
-              67,
-              0,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-            ],
-            [
-              0,
-              0,
-              0,
-              65,
-              65,
-              65,
-              65,
-              0,
-              67,
-              67,
-              67,
-              67,
-              67,
-              67,
-              67,
-              67,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-            ],
-            [
-              0,
-              0,
-              0,
-              65,
-              65,
-              65,
-              65,
-              0,
-              67,
-              67,
-              67,
-              65,
-              65,
-              65,
-              67,
-              67,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-            ],
-            [
-              0,
-              0,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-              0,
-              67,
-              0,
-              65,
-              0,
-              65,
-              0,
-              67,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-            ],
-            [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              65,
-              65,
-              65,
-              0,
-              0,
-              0,
-              65,
-              65,
-              0,
-              0,
-              0,
-            ],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 65, 0, 0, 0],
+            [0, 0, 0, 65, 65, 0, 0, 0, 0, 67, 67, 0, 0, 67, 67, 0, 0, 65, 65, 0, 0, 0],
+            [0, 0, 0, 65, 65, 65, 65, 0, 67, 67, 67, 67, 67, 67, 67, 67, 0, 65, 65, 0, 0, 0],
+            [0, 0, 0, 65, 65, 65, 65, 0, 67, 67, 67, 65, 65, 65, 67, 67, 0, 65, 65, 0, 0, 0],
+            [0, 0, 0, 65, 65, 0, 0, 0, 0, 67, 0, 65, 0, 65, 0, 67, 0, 65, 65, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 65, 65, 0, 0, 0, 65, 65, 0, 0, 0],
           ],
           style: {
             height: 6,

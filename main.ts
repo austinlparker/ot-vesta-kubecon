@@ -20,6 +20,7 @@ import { ContentFilter } from "./mod.ts";
 const isDev = Deno.env.get("DEV_MODE") === "true";
 const port = parseInt(Deno.env.get("PORT") || "3000");
 const vestaboardApiKey = Deno.env.get("VESTABOARD_API_KEY");
+const dbPath = Deno.env.get("DB_PATH") || "./messages.db";
 
 if (!isDev && !vestaboardApiKey) {
   console.error("VESTABOARD_API_KEY is required in production mode");
@@ -32,7 +33,7 @@ if (!openAiKey) {
 }
 
 // Initialize clients
-const messageStore = new MessageStore();
+const messageStore = new MessageStore(dbPath);
 const vc = new VestaboardClient({
   apiKey: vestaboardApiKey!,
   devMode: isDev,
@@ -45,7 +46,9 @@ const apiRouter = new Router({ prefix: "/api" });
 const metricsRouter = new Router();
 
 const contentFilter = new ContentFilter(openAiKey);
-const _jetstream = initializeJetstream(messageStore, vc, contentFilter);
+const jetstream = initializeJetstream(messageStore, vc, contentFilter);
+
+jetstream.start()
 
 const app = new Application();
 const metricsApp = new Application();
@@ -300,6 +303,11 @@ app.addEventListener("listen", ({ hostname, port, secure }) => {
     `🚀 Server listening on: ${secure ? "https://" : "http://"}${hostname ?? "localhost"
     }:${port}`,
   );
+});
+
+Deno.addSignalListener("SIGINT", () => {
+  messageStore.close();
+  Deno.exit();
 });
 
 await Promise.all([
